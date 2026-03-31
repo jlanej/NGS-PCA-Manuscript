@@ -57,6 +57,16 @@ def _load_merged(output_dir: str) -> pd.DataFrame:
     return df
 
 
+def _count_available_samples(data_dir: str) -> int:
+    pcs_path = os.path.join(data_dir, "ngspca_output", "svd.pcs.txt")
+    qc_path = os.path.join(data_dir, "qc_output", "sample_qc.tsv")
+    pcs = pd.read_csv(pcs_path, sep="\t")
+    qc = pd.read_csv(qc_path, sep="\t")
+    pcs_samples = set(pcs["SAMPLE"].str.replace(r"\.by1000\.$", "", regex=True))
+    qc_samples = set(qc["SAMPLE_ID"])
+    return len(pcs_samples & qc_samples)
+
+
 def _compute_variance(sv_df: pd.DataFrame, n_pcs: int = 50):
     eigenvalues = sv_df["SINGULAR_VALUES"].values ** 2
     total = eigenvalues.sum()
@@ -1161,7 +1171,7 @@ def generate_report(
     sv_df = _load_singular_values(data_dir)
     merged = _load_merged(output_dir)
 
-    n_samples = len(merged)
+    n_samples = _count_available_samples(data_dir)
     n_populations = merged["POPULATION"].nunique()
     n_superpops = merged["SUPERPOPULATION"].nunique()
 
