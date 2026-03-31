@@ -179,16 +179,16 @@ def _build_html(
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <style>
     :root {
-      --bg: #0f172a;
-      --surface: #1e293b;
-      --surface2: #334155;
-      --border: #475569;
-      --text: #e2e8f0;
-      --text-dim: #94a3b8;
-      --accent: #38bdf8;
-      --accent2: #818cf8;
-      --green: #34d399;
-      --amber: #fbbf24;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface2: #f1f5f9;
+      --border: #cbd5e1;
+      --text: #0f172a;
+      --text-dim: #475569;
+      --accent: #0ea5e9;
+      --accent2: #6366f1;
+      --green: #059669;
+      --amber: #d97706;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -198,7 +198,7 @@ def _build_html(
       line-height: 1.6;
     }
     .header {
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
       border-bottom: 1px solid var(--border);
       padding: 2rem 2rem 1rem;
     }
@@ -445,11 +445,11 @@ def _build_html(
     /* ------------------------------------------------------------------ */
     const LAYOUT_BASE = {
       paper_bgcolor: 'rgba(0,0,0,0)',
-      plot_bgcolor: '#1e293b',
-      font: { color: '#e2e8f0', family: 'Inter, Segoe UI, system-ui, sans-serif', size: 12 },
+      plot_bgcolor: '#ffffff',
+      font: { color: '#0f172a', family: 'Inter, Segoe UI, system-ui, sans-serif', size: 12 },
       margin: { t: 30, r: 20, b: 50, l: 60 },
-      xaxis: { gridcolor: '#334155', zerolinecolor: '#475569' },
-      yaxis: { gridcolor: '#334155', zerolinecolor: '#475569' },
+      xaxis: { gridcolor: '#e2e8f0', zerolinecolor: '#cbd5e1' },
+      yaxis: { gridcolor: '#e2e8f0', zerolinecolor: '#cbd5e1' },
     };
     const CFG = { responsive: true, displayModeBar: true, displaylogo: false,
                   modeBarButtonsToRemove: ['lasso2d','select2d'] };
@@ -541,7 +541,7 @@ def _build_html(
       return Object.entries(groups).map(([name, d]) => ({
         x: d.x, y: d.y, text: d.text, type: 'scattergl', mode: 'markers',
         name: name,
-        marker: { color: pal[name] || '#888', size: 3.5, opacity: 0.65 },
+        marker: { color: pal[name] || '#888', size: 4.5, opacity: 0.8 },
         hovertemplate: '%{text}<br>' + xKey + ': %{x:.4f}<br>' + yKey + ': %{y:.4f}<extra>' + name + '</extra>',
       }));
     }
@@ -597,7 +597,7 @@ def _build_html(
       const traces = Object.entries(groups).map(([name, d]) => ({
         x: d.x, y: d.y, text: d.text, type: 'scattergl', mode: 'markers',
         name: name,
-        marker: { color: pal[name] || '#888', size: 4, opacity: 0.7 },
+        marker: { color: pal[name] || '#888', size: 5, opacity: 0.8 },
         hovertemplate: '%{text}<br>UMAP-1: %{x:.2f}<br>UMAP-2: %{y:.2f}<extra>' + name + '</extra>',
       }));
       Plotly.react('umap-plot', traces, {
@@ -635,7 +635,7 @@ def _build_html(
       Plotly.newPlot('heatmap-plot', [{
         z: z, x: pcs, y: variables, type: 'heatmap',
         colorscale: [
-          [0,    '#1e293b'],
+          [0,    '#ffffff'],
           [0.15, '#312e81'],
           [0.35, '#7c3aed'],
           [0.55, '#c026d3'],
@@ -645,7 +645,7 @@ def _build_html(
         zmin: 0, zmax: 1,
         hovertext: hovertext, hoverinfo: 'text',
         colorbar: { title: 'Effect size', titleside: 'right', tickformat: '.2f',
-                    bgcolor: 'rgba(0,0,0,0)', tickcolor: '#e2e8f0', tickfont: { color: '#e2e8f0' } },
+                    bgcolor: 'rgba(0,0,0,0)', tickcolor: '#0f172a', tickfont: { color: '#0f172a' } },
       }], {
         ...LAYOUT_BASE,
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45, side: 'bottom' },

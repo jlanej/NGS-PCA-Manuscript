@@ -28,7 +28,7 @@ jobs:
         env:
           NGSPCA_DATA_DIR: 1000G
           NGSPCA_OUTPUT_DIR: output
-          NGSPCA_SUBSET: "200"
+          NGSPCA_SUBSET: "1000"
         run: bash run_all.sh
 
       - name: Run tests
