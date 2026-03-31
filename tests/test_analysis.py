@@ -15,6 +15,9 @@ import pandas as pd
 import pytest
 
 OUTPUT_DIR = os.environ.get("NGSPCA_OUTPUT_DIR", "output")
+DATA_DIR = os.environ.get("NGSPCA_DATA_DIR", "1000G")
+# NGS-PCA SVD sample IDs are suffixed with ".by1000." and need normalisation.
+PC_SAMPLE_SUFFIX_PATTERN = r"\.by1000\.$"
 ORANGE_R_MIN = 220
 ORANGE_G_MIN = 90
 ORANGE_G_MAX = 180
@@ -134,11 +137,20 @@ class TestInteractiveReport:
         assert "Plotly.newPlot" in content or "Plotly.react" in content, \
             "Report should contain Plotly chart calls"
 
-    def test_report_uses_1000_samples(self):
+    def test_report_uses_all_available_samples(self):
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
-        assert '"n_samples": 1000' in content
+        pcs_path = os.path.join(DATA_DIR, "ngspca_output", "svd.pcs.txt")
+        qc_path = os.path.join(DATA_DIR, "qc_output", "sample_qc.tsv")
+        assert os.path.isfile(pcs_path), f"Missing PCA sample file: {pcs_path}"
+        assert os.path.isfile(qc_path), f"Missing QC sample file: {qc_path}"
+        pcs = pd.read_csv(pcs_path, sep="\t")
+        qc = pd.read_csv(qc_path, sep="\t")
+        pcs_samples = set(pcs["SAMPLE"].str.replace(PC_SAMPLE_SUFFIX_PATTERN, "", regex=True))
+        qc_samples = set(qc["SAMPLE_ID"])
+        n_available = len(pcs_samples & qc_samples)
+        assert f'"n_samples": {n_available}' in content
 
     def test_report_has_all_sections(self):
         path = os.path.join(REPORT_DIR, "index.html")
