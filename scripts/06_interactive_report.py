@@ -88,11 +88,17 @@ def _compute_umap(df: pd.DataFrame, n_pcs: int):
 
 
 def _prepare_scatter_data(df: pd.DataFrame):
-    """Return a lightweight dict for the scatter plots."""
-    cols = ["SAMPLE", "PC1", "PC2", "PC3", "PC4",
-            "SUPERPOPULATION", "RELEASE_BATCH", "INFERRED_SEX", "POPULATION"]
-    sub = df[[c for c in cols if c in df.columns]].copy()
-    return sub.to_dict(orient="list")
+    """Return a lightweight dict for the scatter plots (PC1-10 + numerics)."""
+    pc_cols = [f"PC{i}" for i in range(1, 11)]
+    meta_cols = ["SAMPLE", "SUPERPOPULATION", "RELEASE_BATCH",
+                 "INFERRED_SEX", "POPULATION"]
+    numeric_cols = ["MEAN_AUTOSOMAL_COV", "X_COV_RATIO", "Y_COV_RATIO",
+                    "PCT_MAPPED", "PCT_DUPLICATE", "TOTAL_BASES", "RELATEDNESS"]
+    want = meta_cols + pc_cols + numeric_cols
+    have = [c for c in want if c in df.columns]
+    sub = df[have].copy()
+    found_numeric = [c for c in numeric_cols if c in df.columns]
+    return sub.to_dict(orient="list"), found_numeric
 
 
 def _compute_associations(df: pd.DataFrame, n_pcs: int = 20):
@@ -219,6 +225,70 @@ def _compute_sample_summary(df: pd.DataFrame):
     }
 
 
+def _ols_r2(X: np.ndarray, y: np.ndarray) -> float:
+    """Compute R² for OLS regression of *y* on *X* (no intercept in X)."""
+    n = X.shape[0]
+    X_int = np.column_stack([np.ones(n), X])
+    try:
+        beta, _, _, _ = np.linalg.lstsq(X_int, y, rcond=None)
+        y_hat = X_int @ beta
+        ss_res = np.sum((y - y_hat) ** 2)
+        ss_tot = np.sum((y - y.mean()) ** 2)
+        return 0.0 if ss_tot == 0 else float(1.0 - ss_res / ss_tot)
+    except np.linalg.LinAlgError:
+        return 0.0
+
+
+def _compute_variance_partitioning(df: pd.DataFrame, n_pcs: int = 20):
+    """Variance partitioning: unique batch, unique ancestry, shared per PC.
+
+    Uses the inclusion/exclusion R² decomposition:
+      unique_batch    = R²_full − R²_ancestry_only
+      unique_ancestry = R²_full − R²_batch_only
+      shared          = R²_batch + R²_ancestry − R²_full
+      residual        = 1 − R²_full
+    """
+    pc_cols = [f"PC{i}" for i in range(1, n_pcs + 1)]
+    available = [c for c in pc_cols if c in df.columns]
+
+    valid = df["RELEASE_BATCH"].notna() & df["SUPERPOPULATION"].notna()
+    sub = df.loc[valid].copy()
+
+    batch_dum = pd.get_dummies(sub["RELEASE_BATCH"], prefix="b", dtype=float)
+    anc_dum = pd.get_dummies(sub["SUPERPOPULATION"], prefix="a", dtype=float)
+    if batch_dum.shape[1] > 1:
+        batch_dum = batch_dum.iloc[:, 1:]
+    if anc_dum.shape[1] > 1:
+        anc_dum = anc_dum.iloc[:, 1:]
+
+    records = []
+    for pc in available:
+        y = sub[pc].values
+        if np.sum((y - y.mean()) ** 2) == 0:
+            records.append({"PC": pc, "unique_batch": 0, "unique_ancestry": 0,
+                            "shared": 0, "residual": 1,
+                            "r2_full": 0, "r2_batch": 0, "r2_ancestry": 0})
+            continue
+        X_full = np.column_stack([batch_dum.values, anc_dum.values])
+        r2_full = _ols_r2(X_full, y)
+        r2_batch = _ols_r2(batch_dum.values, y)
+        r2_ancestry = _ols_r2(anc_dum.values, y)
+        unique_batch = r2_full - r2_ancestry
+        unique_ancestry = r2_full - r2_batch
+        shared = r2_batch + r2_ancestry - r2_full
+        records.append({
+            "PC": pc,
+            "unique_batch": float(max(0, unique_batch)),
+            "unique_ancestry": float(max(0, unique_ancestry)),
+            "shared": float(max(0, shared)),
+            "residual": float(1.0 - r2_full),
+            "r2_full": float(r2_full),
+            "r2_batch": float(r2_batch),
+            "r2_ancestry": float(r2_ancestry),
+        })
+    return records
+
+
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
@@ -229,6 +299,7 @@ def _build_html(
     n_scree,
     mp_cutoff_pcs,
     scatter_data,
+    numeric_cols,
     umap1,
     umap2,
     n_umap_pcs,
@@ -239,6 +310,7 @@ def _build_html(
     confounding_results,
     sex_pc_records,
     sample_summary,
+    variance_partitioning,
     n_samples,
     n_populations,
     n_superpops,
@@ -263,6 +335,7 @@ def _build_html(
         "n_scree": n_scree,
         "mp_cutoff_pcs": mp_cutoff_pcs,
         "scatter": scatter_data,
+        "numeric_cols": numeric_cols,
         "umap1": umap1,
         "umap2": umap2,
         "n_umap_pcs": n_umap_pcs,
@@ -273,6 +346,7 @@ def _build_html(
         "confounding": confounding_results,
         "sex_pc": sex_pc_records,
         "sample_summary": sample_summary,
+        "variance_partitioning": variance_partitioning,
         "n_samples": n_samples,
         "n_populations": n_populations,
         "n_superpops": n_superpops,
@@ -408,7 +482,7 @@ def _build_html(
     }
     .plot-card-header h3 { font-size: 1rem; font-weight: 600; }
     .plot-card-body { padding: 0.5rem; }
-    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
     .controls button {
       background: var(--surface2);
       border: 1px solid var(--border);
@@ -422,6 +496,24 @@ def _build_html(
     }
     .controls button:hover { border-color: var(--accent); color: var(--text); }
     .controls button.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+    .controls select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .controls label {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      white-space: nowrap;
+    }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
     @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
     /* Summary tables */
@@ -520,6 +612,7 @@ def _build_html(
       <a href="#section-pca">PCA Scatter</a>
       <a href="#section-umap">UMAP</a>
       <a href="#section-confounding">Confounding</a>
+      <a href="#section-partitioning">Variance Partitioning</a>
       <a href="#section-heatmap">PC–QC Associations</a>
       <a href="#section-sex">Sex × PC</a>
       <a href="#section-batch">Batch vs Ancestry</a>
@@ -597,35 +690,28 @@ def _build_html(
     <div class="report-section" id="section-pca">
       <h2>PCA Scatter Plots</h2>
       <p class="description">
-        Interactive scatter plots of principal component pairs.
-        Toggle the colour overlay to explore batch effects, population labels, and sex differences.
-        Because NGS-PCA PCs reflect coverage-level technical variation, visible batch separation is
-        expected on the leading PCs; any clustering by superpopulation may indicate that batches are
-        non-randomly distributed across populations.
+        Interactive 3D scatter plot of principal components (select up to three PCs from PC1–10).
+        Toggle the colour overlay to explore batch effects, population labels, sex differences,
+        or any continuous QC metric on a heatmap scale.
+        When a categorical variable is selected, the second panel shows boxplots of PC
+        distributions by group; when a continuous metric is selected, it shows Pearson and
+        Spearman correlation bar charts (computed at runtime).
       </p>
-      <div class="grid-2">
-        <div class="plot-card">
-          <div class="plot-card-header">
-            <h3>PC1 vs PC2</h3>
-            <div class="controls" id="ctrl-pca12">
-              <button class="active" data-color="superpop">Superpopulation</button>
-              <button data-color="batch">Batch</button>
-              <button data-color="sex">Sex</button>
-            </div>
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>PCA 3D Scatter</h3>
+          <div class="controls">
+            <label>X <select id="pca-x"></select></label>
+            <label>Y <select id="pca-y"></select></label>
+            <label>Z <select id="pca-z"></select></label>
+            <label>Color <select id="pca-color"></select></label>
           </div>
-          <div class="plot-card-body"><div id="pca-12" style="height:500px"></div></div>
         </div>
-        <div class="plot-card">
-          <div class="plot-card-header">
-            <h3>PC3 vs PC4</h3>
-            <div class="controls" id="ctrl-pca34">
-              <button class="active" data-color="superpop">Superpopulation</button>
-              <button data-color="batch">Batch</button>
-              <button data-color="sex">Sex</button>
-            </div>
-          </div>
-          <div class="plot-card-body"><div id="pca-34" style="height:500px"></div></div>
-        </div>
+        <div class="plot-card-body"><div id="pca-scatter" style="height:560px"></div></div>
+      </div>
+      <div class="plot-card">
+        <div class="plot-card-header"><h3 id="pca-panel2-title">Distribution</h3></div>
+        <div class="plot-card-body"><div id="pca-panel2" style="height:460px"></div></div>
       </div>
     </div>
 
@@ -634,19 +720,23 @@ def _build_html(
       <h2>UMAP Projection</h2>
       <p class="description">
         Two-dimensional UMAP embedding computed from a Marchenko–Pastur-selected number of
-        principal components. UMAP preserves both local neighbourhood structure and global cluster
-        separation, providing an intuitive visualisation of sample relationships.
+        principal components. Colour by categorical grouping or a continuous QC metric.
+        The second panel shows boxplots (categorical) or correlation bar charts (continuous).
       </p>
-      <div class="plot-card">
-        <div class="plot-card-header">
-          <h3 id="umap-title">UMAP (PCs)</h3>
-          <div class="controls" id="ctrl-umap">
-            <button class="active" data-color="superpop">Superpopulation</button>
-            <button data-color="batch">Batch</button>
-            <button data-color="sex">Sex</button>
+      <div class="grid-2">
+        <div class="plot-card">
+          <div class="plot-card-header">
+            <h3 id="umap-title">UMAP (PCs)</h3>
+            <div class="controls">
+              <label>Color <select id="umap-color"></select></label>
+            </div>
           </div>
+          <div class="plot-card-body"><div id="umap-plot" style="height:560px"></div></div>
         </div>
-        <div class="plot-card-body"><div id="umap-plot" style="height:560px"></div></div>
+        <div class="plot-card">
+          <div class="plot-card-header"><h3 id="umap-panel2-title">Distribution</h3></div>
+          <div class="plot-card-body"><div id="umap-panel2" style="height:560px"></div></div>
+        </div>
       </div>
     </div>
 
@@ -664,6 +754,27 @@ def _build_html(
         under-represented.
       </p>
       <div id="confounding-cards"></div>
+    </div>
+
+    <!-- Variance Partitioning -->
+    <div class="report-section" id="section-partitioning">
+      <h2>Variance Partitioning: Disentangling Batch and Ancestry</h2>
+      <p class="description">
+        To assess whether batch PCs are erroneously capturing ancestry — or whether ancestry
+        is simply confounded with batch — we decompose each PC's variance into four components
+        using an inclusion/exclusion R² approach.
+        <strong>Unique Batch</strong> = variance explained only by batch (not by ancestry);
+        <strong>Unique Ancestry</strong> = variance explained only by ancestry (not by batch);
+        <strong>Shared (Confounded)</strong> = variance attributable to either factor due to
+        their correlation;
+        <strong>Residual</strong> = variance explained by neither.
+        Large "Shared" bars indicate PCs where batch and ancestry effects are inseparable.
+      </p>
+      <div class="plot-card">
+        <div class="plot-card-header"><h3>R² Variance Partitioning per PC</h3></div>
+        <div class="plot-card-body"><div id="partitioning-bar" style="height:460px"></div></div>
+      </div>
+      <div id="partitioning-table-container"></div>
     </div>
 
     <!-- Heatmap -->
@@ -772,6 +883,9 @@ def _build_html(
     const PAL_SUPERPOP = { AFR:'#E41A1C', AMR:'#377EB8', EAS:'#4DAF4A', EUR:'#984EA3', SAS:'#FF7F00' };
     const PAL_BATCH    = { '698':'#1B9E77', '2504':'#D95F02' };
     const PAL_SEX      = { M:'#4393C3', F:'#D6604D' };
+    const CAT_PALS = { SUPERPOPULATION: PAL_SUPERPOP, RELEASE_BATCH: PAL_BATCH, INFERRED_SEX: PAL_SEX };
+    const PCA_PCS = ['PC1','PC2','PC3','PC4','PC5','PC6','PC7','PC8','PC9','PC10'].filter(p => DATA.scatter[p]);
+    const NUMERIC_COLS = DATA.numeric_cols || [];
 
     /* ------------------------------------------------------------------ */
     /*  STATS                                                              */
@@ -799,6 +913,77 @@ def _build_html(
       }, { rootMargin: '-80px 0px -60% 0px', threshold: 0 });
       sections.forEach(s => observer.observe(s));
     })();
+
+    /* ------------------------------------------------------------------ */
+    /*  HELPER: populate <select> and colour <select>                      */
+    /* ------------------------------------------------------------------ */
+    function populateSelect(id, options, selected) {
+      const sel = document.getElementById(id);
+      options.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o; opt.textContent = o;
+        if (o === selected) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    function populateColorSelect(id) {
+      const sel = document.getElementById(id);
+      const catGroup = document.createElement('optgroup');
+      catGroup.label = 'Categorical';
+      [{v:'SUPERPOPULATION',t:'Superpopulation'},{v:'RELEASE_BATCH',t:'Batch'},{v:'INFERRED_SEX',t:'Sex'}]
+        .forEach(function(item) {
+          var o = document.createElement('option');
+          o.value = 'cat:' + item.v; o.textContent = item.t;
+          catGroup.appendChild(o);
+        });
+      sel.appendChild(catGroup);
+      if (NUMERIC_COLS.length > 0) {
+        const numGroup = document.createElement('optgroup');
+        numGroup.label = 'Continuous (heatmap)';
+        NUMERIC_COLS.forEach(function(c) {
+          var o = document.createElement('option');
+          o.value = 'num:' + c; o.textContent = c;
+          numGroup.appendChild(o);
+        });
+        sel.appendChild(numGroup);
+      }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  HELPER: Pearson and Spearman correlation at runtime                */
+    /* ------------------------------------------------------------------ */
+    function pearsonCorr(x, y) {
+      var n = x.length, sumX=0, sumY=0, sumXY=0, sumX2=0, sumY2=0, cnt=0;
+      for (var i=0; i<n; i++) {
+        if (x[i]==null || y[i]==null || isNaN(x[i]) || isNaN(y[i])) continue;
+        sumX+=x[i]; sumY+=y[i]; sumXY+=x[i]*y[i];
+        sumX2+=x[i]*x[i]; sumY2+=y[i]*y[i]; cnt++;
+      }
+      if (cnt < 3) return 0;
+      var num = cnt*sumXY - sumX*sumY;
+      var den = Math.sqrt((cnt*sumX2-sumX*sumX)*(cnt*sumY2-sumY*sumY));
+      return den === 0 ? 0 : num/den;
+    }
+
+    function rankArray(arr) {
+      var indexed = [];
+      for (var i=0; i<arr.length; i++) {
+        if (arr[i]!=null && !isNaN(arr[i])) indexed.push({v:arr[i], i:i});
+      }
+      indexed.sort(function(a,b){return a.v-b.v;});
+      var ranks = new Array(arr.length).fill(null);
+      for (var i=0; i<indexed.length; ) {
+        var j = i;
+        while (j < indexed.length && indexed[j].v === indexed[i].v) j++;
+        var avgRank = (i+j-1)/2 + 1;
+        for (var k=i; k<j; k++) ranks[indexed[k].i] = avgRank;
+        i = j;
+      }
+      return ranks;
+    }
+
+    function spearmanCorr(x, y) { return pearsonCorr(rankArray(x), rankArray(y)); }
 
     /* ------------------------------------------------------------------ */
     /*  SCREE                                                              */
@@ -859,104 +1044,244 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
-    /*  PCA SCATTER HELPER                                                 */
+    /*  PCA 3D SCATTER + PANEL 2 (boxplots / correlation bars)            */
     /* ------------------------------------------------------------------ */
-    function scatterTraces(xKey, yKey, colorBy) {
-      const S = DATA.scatter;
-      let pal, col;
-      if (colorBy === 'superpop') { pal = PAL_SUPERPOP; col = 'SUPERPOPULATION'; }
-      else if (colorBy === 'batch') { pal = PAL_BATCH; col = 'RELEASE_BATCH'; }
-      else { pal = PAL_SEX; col = 'INFERRED_SEX'; }
+    populateSelect('pca-x', PCA_PCS, 'PC1');
+    populateSelect('pca-y', PCA_PCS, 'PC2');
+    populateSelect('pca-z', PCA_PCS, 'PC3');
+    populateColorSelect('pca-color');
 
-      const xArr = S[xKey], yArr = S[yKey], cArr = S[col], ids = S['SAMPLE'];
-      const groups = {};
-      for (let i = 0; i < xArr.length; i++) {
-        const g = cArr[i];
-        if (g == null) continue;
-        if (!groups[g]) groups[g] = { x: [], y: [], text: [] };
-        groups[g].x.push(xArr[i]);
-        groups[g].y.push(yArr[i]);
-        groups[g].text.push(ids[i]);
-      }
-      return Object.entries(groups).map(([name, d]) => ({
-        x: d.x, y: d.y, text: d.text, type: 'scattergl', mode: 'markers',
-        name: name,
-        marker: { color: pal[name] || '#888', size: 4.5, opacity: 0.8 },
-        hovertemplate: '%{text}<br>' + xKey + ': %{x:.4f}<br>' + yKey + ': %{y:.4f}<extra>' + name + '</extra>',
-      }));
-    }
+    function plotPCA() {
+      var xKey = document.getElementById('pca-x').value;
+      var yKey = document.getElementById('pca-y').value;
+      var zKey = document.getElementById('pca-z').value;
+      var colorVal = document.getElementById('pca-color').value;
+      var parts = colorVal.split(':');
+      var cType = parts[0], col = parts[1];
+      var S = DATA.scatter;
 
-    function plotScatter(divId, xKey, yKey, colorBy) {
-      const traces = scatterTraces(xKey, yKey, colorBy);
-      Plotly.react(divId, traces, {
-        ...LAYOUT_BASE,
-        xaxis: { ...LAYOUT_BASE.xaxis, title: xKey },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: yKey },
-        legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
-        margin: { t: 15, r: 15, b: 50, l: 60 },
-      }, CFG);
-    }
-
-    /* PCA scatter initial render */
-    plotScatter('pca-12', 'PC1', 'PC2', 'superpop');
-    plotScatter('pca-34', 'PC3', 'PC4', 'superpop');
-
-    /* colour toggle */
-    function wireControls(ctrlId, divId, xKey, yKey) {
-      document.querySelectorAll('#' + ctrlId + ' button').forEach(btn => {
-        btn.addEventListener('click', () => {
-          document.querySelectorAll('#' + ctrlId + ' button').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          plotScatter(divId, xKey, yKey, btn.dataset.color);
+      if (cType === 'cat') {
+        var pal = CAT_PALS[col] || {};
+        var groups = {};
+        for (var i=0; i<S.SAMPLE.length; i++) {
+          var g = S[col] ? S[col][i] : null;
+          if (g == null) continue;
+          if (!groups[g]) groups[g] = {x:[],y:[],z:[],text:[]};
+          groups[g].x.push(S[xKey][i]); groups[g].y.push(S[yKey][i]); groups[g].z.push(S[zKey][i]);
+          groups[g].text.push(S.SAMPLE[i]);
+        }
+        var traces = Object.entries(groups).map(function(e) {
+          var name = e[0], d = e[1];
+          return {
+            x:d.x, y:d.y, z:d.z, text:d.text, type:'scatter3d', mode:'markers', name:name,
+            marker: {color: pal[name]||'#888', size:3, opacity:0.8},
+            hovertemplate: '%{text}<br>'+xKey+':%{x:.3f}<br>'+yKey+':%{y:.3f}<br>'+zKey+':%{z:.3f}<extra>'+name+'</extra>',
+          };
         });
-      });
-    }
-    wireControls('ctrl-pca12', 'pca-12', 'PC1', 'PC2');
-    wireControls('ctrl-pca34', 'pca-34', 'PC3', 'PC4');
-
-    /* ------------------------------------------------------------------ */
-    /*  UMAP                                                               */
-    /* ------------------------------------------------------------------ */
-    function plotUmap(colorBy) {
-      const S = DATA.scatter;
-      let pal, col;
-      if (colorBy === 'superpop') { pal = PAL_SUPERPOP; col = 'SUPERPOPULATION'; }
-      else if (colorBy === 'batch') { pal = PAL_BATCH; col = 'RELEASE_BATCH'; }
-      else { pal = PAL_SEX; col = 'INFERRED_SEX'; }
-
-      const cArr = S[col], ids = S['SAMPLE'];
-      const groups = {};
-      for (let i = 0; i < DATA.umap1.length; i++) {
-        const g = cArr[i];
-        if (g == null) continue;
-        if (!groups[g]) groups[g] = { x: [], y: [], text: [] };
-        groups[g].x.push(DATA.umap1[i]);
-        groups[g].y.push(DATA.umap2[i]);
-        groups[g].text.push(ids[i]);
+        Plotly.react('pca-scatter', traces, {
+          ...LAYOUT_BASE, margin:{t:15,r:15,b:15,l:15},
+          scene: {xaxis:{title:xKey}, yaxis:{title:yKey}, zaxis:{title:zKey}},
+        }, CFG);
+      } else {
+        var vals = S[col] || [];
+        Plotly.react('pca-scatter', [{
+          x:S[xKey], y:S[yKey], z:S[zKey], text:S.SAMPLE,
+          type:'scatter3d', mode:'markers',
+          marker: {color:vals, colorscale:'Viridis', size:3, opacity:0.8,
+                   colorbar:{title:col,titleside:'right'}},
+          hovertemplate: '%{text}<br>'+xKey+':%{x:.3f}<br>'+yKey+':%{y:.3f}<br>'+zKey+':%{z:.3f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
+        }], {
+          ...LAYOUT_BASE, margin:{t:15,r:15,b:15,l:15},
+          scene: {xaxis:{title:xKey}, yaxis:{title:yKey}, zaxis:{title:zKey}},
+        }, CFG);
       }
-      const traces = Object.entries(groups).map(([name, d]) => ({
-        x: d.x, y: d.y, text: d.text, type: 'scattergl', mode: 'markers',
-        name: name,
-        marker: { color: pal[name] || '#888', size: 5, opacity: 0.8 },
-        hovertemplate: '%{text}<br>UMAP-1: %{x:.2f}<br>UMAP-2: %{y:.2f}<extra>' + name + '</extra>',
-      }));
-      Plotly.react('umap-plot', traces, {
-        ...LAYOUT_BASE,
-        xaxis: { ...LAYOUT_BASE.xaxis, title: 'UMAP-1' },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: 'UMAP-2' },
-        legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
-        margin: { t: 15, r: 15, b: 50, l: 60 },
-      }, CFG);
+      updatePCAPanel2();
     }
-    plotUmap('superpop');
-    document.getElementById('umap-title').textContent = 'UMAP (' + DATA.n_umap_pcs + ' PCs, MP)';
-    document.querySelectorAll('#ctrl-umap button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('#ctrl-umap button').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        plotUmap(btn.dataset.color);
-      });
+
+    function updatePCAPanel2() {
+      var colorVal = document.getElementById('pca-color').value;
+      var parts = colorVal.split(':');
+      var cType = parts[0], col = parts[1];
+      var S = DATA.scatter;
+      var xKey = document.getElementById('pca-x').value;
+      var yKey = document.getElementById('pca-y').value;
+      var zKey = document.getElementById('pca-z').value;
+      var selPCs = [xKey, yKey, zKey];
+
+      if (cType === 'cat') {
+        var pal = CAT_PALS[col] || {};
+        var cats = [];
+        var seen = {};
+        (S[col]||[]).forEach(function(v){ if(v!=null && !seen[v]){seen[v]=1;cats.push(v);} });
+        cats.sort();
+        var traces = [];
+        selPCs.forEach(function(pc, pi) {
+          cats.forEach(function(cat) {
+            var vals = [];
+            for (var i=0; i<S.SAMPLE.length; i++) {
+              if (S[col][i] === cat) vals.push(S[pc][i]);
+            }
+            traces.push({
+              y:vals, type:'box', name:cat,
+              x:vals.map(function(){return pc;}),
+              marker:{color:pal[cat]||'#888'},
+              legendgroup:cat, showlegend:pi===0,
+            });
+          });
+        });
+        document.getElementById('pca-panel2-title').textContent = col + ' × PC Distributions';
+        Plotly.react('pca-panel2', traces, {
+          ...LAYOUT_BASE, boxmode:'group',
+          xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'PC Score'},
+          legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+        }, CFG);
+      } else {
+        var metric = S[col] || [];
+        var pearsonVals = PCA_PCS.map(function(pc){return pearsonCorr(S[pc], metric);});
+        var spearmanVals = PCA_PCS.map(function(pc){return spearmanCorr(S[pc], metric);});
+        document.getElementById('pca-panel2-title').textContent = col + ' × PC Correlation';
+        Plotly.react('pca-panel2', [{
+          x:PCA_PCS, y:pearsonVals, type:'bar', name:'Pearson r',
+          marker:{color:'#6366f1'},
+          hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
+        },{
+          x:PCA_PCS, y:spearmanVals, type:'bar', name:'Spearman \\u03c1',
+          marker:{color:'#f59e0b'},
+          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}<extra>Spearman</extra>',
+        }], {
+          ...LAYOUT_BASE, barmode:'group',
+          xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'Correlation'},
+          shapes:[{type:'line', x0:-0.5, x1:PCA_PCS.length-0.5, y0:0, y1:0,
+                   line:{color:'#94a3b8', width:1, dash:'dot'}}],
+          legend:{bgcolor:'rgba(0,0,0,0)'},
+        }, CFG);
+      }
+    }
+
+    ['pca-x','pca-y','pca-z','pca-color'].forEach(function(id){
+      document.getElementById(id).addEventListener('change', plotPCA);
     });
+    plotPCA();
+
+    /* ------------------------------------------------------------------ */
+    /*  UMAP (2D) + PANEL 2                                               */
+    /* ------------------------------------------------------------------ */
+    populateColorSelect('umap-color');
+
+    function plotUmap() {
+      var colorVal = document.getElementById('umap-color').value;
+      var parts = colorVal.split(':');
+      var cType = parts[0], col = parts[1];
+      var S = DATA.scatter, ids = S['SAMPLE'];
+
+      if (cType === 'cat') {
+        var pal = CAT_PALS[col] || {};
+        var groups = {};
+        for (var i=0; i<DATA.umap1.length; i++) {
+          var g = S[col] ? S[col][i] : null;
+          if (g == null) continue;
+          if (!groups[g]) groups[g] = {x:[],y:[],text:[]};
+          groups[g].x.push(DATA.umap1[i]); groups[g].y.push(DATA.umap2[i]);
+          groups[g].text.push(ids[i]);
+        }
+        var traces = Object.entries(groups).map(function(e) {
+          var name = e[0], d = e[1];
+          return {
+            x:d.x, y:d.y, text:d.text, type:'scattergl', mode:'markers', name:name,
+            marker:{color:pal[name]||'#888', size:5, opacity:0.8},
+            hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<extra>'+name+'</extra>',
+          };
+        });
+        Plotly.react('umap-plot', traces, {
+          ...LAYOUT_BASE,
+          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2'},
+          legend:{bgcolor:'rgba(0,0,0,0)', font:{size:11}},
+          margin:{t:15,r:15,b:50,l:60},
+        }, CFG);
+      } else {
+        var vals = S[col] || [];
+        Plotly.react('umap-plot', [{
+          x:DATA.umap1, y:DATA.umap2, text:ids,
+          type:'scattergl', mode:'markers',
+          marker:{color:vals, colorscale:'Viridis', size:5, opacity:0.8,
+                  colorbar:{title:col,titleside:'right'}},
+          hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
+        }], {
+          ...LAYOUT_BASE,
+          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2'},
+          margin:{t:15,r:15,b:50,l:60},
+        }, CFG);
+      }
+      updateUmapPanel2();
+    }
+
+    function updateUmapPanel2() {
+      var colorVal = document.getElementById('umap-color').value;
+      var parts = colorVal.split(':');
+      var cType = parts[0], col = parts[1];
+      var S = DATA.scatter;
+      var dims = ['UMAP-1','UMAP-2'];
+      var dimData = [DATA.umap1, DATA.umap2];
+
+      if (cType === 'cat') {
+        var pal = CAT_PALS[col] || {};
+        var cats = [];
+        var seen = {};
+        (S[col]||[]).forEach(function(v){ if(v!=null && !seen[v]){seen[v]=1;cats.push(v);} });
+        cats.sort();
+        var traces = [];
+        dims.forEach(function(dim, di) {
+          cats.forEach(function(cat) {
+            var vals = [];
+            for (var i=0; i<S.SAMPLE.length; i++) {
+              if (S[col][i] === cat) vals.push(dimData[di][i]);
+            }
+            traces.push({
+              y:vals, type:'box', name:cat,
+              x:vals.map(function(){return dim;}),
+              marker:{color:pal[cat]||'#888'},
+              legendgroup:cat, showlegend:di===0,
+            });
+          });
+        });
+        document.getElementById('umap-panel2-title').textContent = col + ' × UMAP Distributions';
+        Plotly.react('umap-panel2', traces, {
+          ...LAYOUT_BASE, boxmode:'group',
+          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP Dimension'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'Coordinate'},
+          legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+        }, CFG);
+      } else {
+        var metric = S[col] || [];
+        var pVals = dims.map(function(_,di){return pearsonCorr(dimData[di], metric);});
+        var sVals = dims.map(function(_,di){return spearmanCorr(dimData[di], metric);});
+        document.getElementById('umap-panel2-title').textContent = col + ' × UMAP Correlation';
+        Plotly.react('umap-panel2', [{
+          x:dims, y:pVals, type:'bar', name:'Pearson r',
+          marker:{color:'#6366f1'},
+          hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
+        },{
+          x:dims, y:sVals, type:'bar', name:'Spearman \\u03c1',
+          marker:{color:'#f59e0b'},
+          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}<extra>Spearman</extra>',
+        }], {
+          ...LAYOUT_BASE, barmode:'group',
+          xaxis:{...LAYOUT_BASE.xaxis, title:'Dimension'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'Correlation'},
+          shapes:[{type:'line', x0:-0.5, x1:1.5, y0:0, y1:0,
+                   line:{color:'#94a3b8', width:1, dash:'dot'}}],
+          legend:{bgcolor:'rgba(0,0,0,0)'},
+        }, CFG);
+      }
+    }
+
+    document.getElementById('umap-title').textContent = 'UMAP (' + DATA.n_umap_pcs + ' PCs, MP)';
+    document.getElementById('umap-color').addEventListener('change', plotUmap);
+    plotUmap();
 
     /* ------------------------------------------------------------------ */
     /*  CONFOUNDING ASSESSMENT                                             */
@@ -973,7 +1298,7 @@ def _build_html(
         let html = '<div class="confound-card">';
         html += '<h4>' + c.label + '</h4>';
         html += '<div class="stat-row">';
-        html += '<div>χ² = <span>' + c.chi2.toFixed(2) + '</span></div>';
+        html += '<div>\\u03c7\\u00b2 = <span>' + c.chi2.toFixed(2) + '</span></div>';
         html += '<div>df = <span>' + c.dof + '</span></div>';
         html += '<div><em>p</em> = <span class="' + sigClass + '">' + pStr + '</span> (' + sigLabel + ')</div>';
         html += "<div>Cram\\u00e9r\\u2019s V = <span>" + c.cramers_v.toFixed(3) + '</span></div>';
@@ -999,6 +1324,53 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  VARIANCE PARTITIONING                                              */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var vp = DATA.variance_partitioning;
+      if (!vp || vp.length === 0) return;
+      var pcs = vp.map(function(r){return r.PC;});
+      Plotly.newPlot('partitioning-bar', [{
+        x:pcs, y:vp.map(function(r){return r.unique_batch;}), type:'bar', name:'Unique Batch',
+        marker:{color:'#D95F02'}, hovertemplate:'%{x}<br>Unique Batch: %{y:.4f}<extra></extra>',
+      },{
+        x:pcs, y:vp.map(function(r){return r.shared;}), type:'bar', name:'Shared (Confounded)',
+        marker:{color:'#94a3b8'}, hovertemplate:'%{x}<br>Shared: %{y:.4f}<extra></extra>',
+      },{
+        x:pcs, y:vp.map(function(r){return r.unique_ancestry;}), type:'bar', name:'Unique Ancestry',
+        marker:{color:'#1B9E77'}, hovertemplate:'%{x}<br>Unique Ancestry: %{y:.4f}<extra></extra>',
+      },{
+        x:pcs, y:vp.map(function(r){return r.residual;}), type:'bar', name:'Residual',
+        marker:{color:'#e2e8f0'}, hovertemplate:'%{x}<br>Residual: %{y:.4f}<extra></extra>',
+      }], {
+        ...LAYOUT_BASE, barmode:'stack',
+        xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component', tickangle:-45},
+        yaxis:{...LAYOUT_BASE.yaxis, title:'Proportion of Variance (R\\u00b2)', range:[0,1.05]},
+        legend:{bgcolor:'rgba(0,0,0,0)', x:0.7, y:0.95},
+      }, CFG);
+
+      /* detailed table */
+      var tc = document.getElementById('partitioning-table-container');
+      var html = '<table class="summary-table"><thead><tr>';
+      html += '<th>PC</th><th class="num">R\\u00b2 Full</th><th class="num">R\\u00b2 Batch</th>';
+      html += '<th class="num">R\\u00b2 Ancestry</th><th class="num">Unique Batch</th>';
+      html += '<th class="num">Unique Ancestry</th><th class="num">Shared</th>';
+      html += '<th class="num">Residual</th></tr></thead><tbody>';
+      vp.forEach(function(r) {
+        html += '<tr><td>' + r.PC + '</td>';
+        html += '<td class="num">' + r.r2_full.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.r2_batch.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.r2_ancestry.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.unique_batch.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.unique_ancestry.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.shared.toFixed(4) + '</td>';
+        html += '<td class="num">' + r.residual.toFixed(4) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      tc.innerHTML = html;
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -1011,7 +1383,7 @@ def _build_html(
         })
       );
       const hovertext = variables.map((v, vi) =>
-        pcs.map((pc, pi) => v + ' × ' + pc + '<br>Effect size: ' + (z[vi][pi] != null ? z[vi][pi].toFixed(4) : 'N/A'))
+        pcs.map((pc, pi) => v + ' \\u00d7 ' + pc + '<br>Effect size: ' + (z[vi][pi] != null ? z[vi][pi].toFixed(4) : 'N/A'))
       );
       Plotly.newPlot('heatmap-plot', [{
         z: z, x: pcs, y: variables, type: 'heatmap',
@@ -1058,8 +1430,8 @@ def _build_html(
       /* sex association table */
       const tc = document.getElementById('sex-pc-table-container');
       let html = '<table class="summary-table"><thead><tr>';
-      html += '<th>PC</th><th class="num">η²</th><th class="num">Point-biserial <em>r</em></th>';
-      html += '<th class="num"><em>p</em> (PB)</th><th class="num">Kruskal–Wallis <em>H</em></th>';
+      html += '<th>PC</th><th class="num">\\u03b7\\u00b2</th><th class="num">Point-biserial <em>r</em></th>';
+      html += '<th class="num"><em>p</em> (PB)</th><th class="num">Kruskal\\u2013Wallis <em>H</em></th>';
       html += '<th class="num"><em>p</em> (KW)</th></tr></thead><tbody>';
       DATA.sex_pc.forEach(r => {
         const pbSig = r.p_pointbiserial != null && r.p_pointbiserial < 0.05 ? 'sig' : 'ns';
@@ -1092,18 +1464,18 @@ def _build_html(
       const ancestry = DATA.batch_records.map(r => r.Ancestry_eta2);
 
       Plotly.newPlot('batch-bar', [{
-        x: pcs, y: batch, type: 'bar', name: 'Batch (η²)',
+        x: pcs, y: batch, type: 'bar', name: 'Batch (\\u03b7\\u00b2)',
         marker: { color: '#D95F02', line: { width: 0 } },
-        hovertemplate: '%{x}<br>Batch η²: %{y:.4f}<extra></extra>',
+        hovertemplate: '%{x}<br>Batch \\u03b7\\u00b2: %{y:.4f}<extra></extra>',
       }, {
-        x: pcs, y: ancestry, type: 'bar', name: 'Ancestry (η²)',
+        x: pcs, y: ancestry, type: 'bar', name: 'Ancestry (\\u03b7\\u00b2)',
         marker: { color: '#1B9E77', line: { width: 0 } },
-        hovertemplate: '%{x}<br>Ancestry η²: %{y:.4f}<extra></extra>',
+        hovertemplate: '%{x}<br>Ancestry \\u03b7\\u00b2: %{y:.4f}<extra></extra>',
       }], {
         ...LAYOUT_BASE,
         barmode: 'group',
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45 },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: 'η² (Effect Size)' },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: '\\u03b7\\u00b2 (Effect Size)' },
         legend: { bgcolor: 'rgba(0,0,0,0)', x: 0.75, y: 0.95 },
       }, CFG);
     })();
@@ -1185,7 +1557,7 @@ def generate_report(
     n_umap_pcs = mp_cutoff_pcs
 
     print("[06] Preparing scatter data …")
-    scatter_data = _prepare_scatter_data(merged)
+    scatter_data, numeric_cols = _prepare_scatter_data(merged)
 
     print("[06] Computing UMAP embedding …")
     umap1, umap2 = _compute_umap(merged, n_umap_pcs)
@@ -1202,6 +1574,9 @@ def generate_report(
     print("[06] Computing sex × PC associations …")
     sex_pc_records = _compute_sex_pc_associations(merged, n_pcs_assoc)
 
+    print("[06] Computing variance partitioning …")
+    variance_partitioning = _compute_variance_partitioning(merged, n_pcs_assoc)
+
     print("[06] Computing sample summary …")
     sample_summary = _compute_sample_summary(merged)
 
@@ -1209,10 +1584,11 @@ def generate_report(
     html = _build_html(
         var_prop, var_cum, n_scree,
         mp_cutoff_pcs,
-        scatter_data, umap1, umap2, n_umap_pcs,
+        scatter_data, numeric_cols, umap1, umap2, n_umap_pcs,
         assoc_rows, assoc_pcs,
         batch_records, batch_pcs,
         confounding_results, sex_pc_records, sample_summary,
+        variance_partitioning,
         n_samples, n_populations, n_superpops,
     )
 
