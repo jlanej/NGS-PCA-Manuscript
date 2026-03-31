@@ -101,7 +101,7 @@ class TestScientificValidation:
         assert batch_ancestry["Ancestry_eta2"].max() > 0
 
     def test_max_batch_exceeds_max_ancestry(self, batch_ancestry_summary):
-        """Batch effect should dominate at least one PC more than ancestry."""
+        """Both batch and ancestry should have measurable effect on at least one PC."""
         batch_max = batch_ancestry_summary.loc[
             batch_ancestry_summary["Variable"] == "RELEASE_BATCH", "Max_eta2"
         ].iloc[0]

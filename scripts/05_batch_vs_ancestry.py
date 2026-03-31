@@ -8,6 +8,7 @@ a summary TSV with the mean η² for each variable.
 
 import argparse
 import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -15,20 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-
-def _eta_squared(categorical: pd.Series, continuous: np.ndarray) -> float:
-    """Compute η² for a categorical-continuous pair."""
-    groups = categorical.values
-    unique = [g for g in np.unique(groups) if pd.notna(g)]
-    if len(unique) < 2:
-        return np.nan
-    group_data = [continuous[groups == g] for g in unique]
-    grand_mean = np.nanmean(continuous)
-    ss_between = sum(len(g) * (np.nanmean(g) - grand_mean) ** 2 for g in group_data)
-    ss_total = np.nansum((continuous - grand_mean) ** 2)
-    if ss_total == 0:
-        return np.nan
-    return ss_between / ss_total
+sys.path.insert(0, os.path.dirname(__file__))
+from utils import eta_squared
 
 
 def batch_vs_ancestry(output_dir: str, n_pcs: int = 20) -> pd.DataFrame:
@@ -43,9 +32,9 @@ def batch_vs_ancestry(output_dir: str, n_pcs: int = 20) -> pd.DataFrame:
     for pc in available:
         valid_batch = df["RELEASE_BATCH"].notna()
         valid_anc = df["SUPERPOPULATION"].notna()
-        eta2_batch = _eta_squared(df.loc[valid_batch, "RELEASE_BATCH"],
+        eta2_batch = eta_squared(df.loc[valid_batch, "RELEASE_BATCH"],
                                   df.loc[valid_batch, pc].values)
-        eta2_anc = _eta_squared(df.loc[valid_anc, "SUPERPOPULATION"],
+        eta2_anc = eta_squared(df.loc[valid_anc, "SUPERPOPULATION"],
                                 df.loc[valid_anc, pc].values)
         records.append({"PC": pc, "Batch_eta2": eta2_batch,
                         "Ancestry_eta2": eta2_anc})

@@ -8,6 +8,7 @@ For each categorical QC variable (batch, superpopulation, sex) computes η²
 
 import argparse
 import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -17,20 +18,8 @@ import pandas as pd
 import seaborn as sns
 from scipy import stats
 
-
-def _eta_squared(categorical: pd.Series, continuous: np.ndarray) -> float:
-    """Compute η² (eta-squared) for a categorical-continuous pair."""
-    groups = categorical.values
-    unique = [g for g in np.unique(groups) if pd.notna(g)]
-    if len(unique) < 2:
-        return np.nan
-    group_data = [continuous[groups == g] for g in unique]
-    grand_mean = np.nanmean(continuous)
-    ss_between = sum(len(g) * (np.nanmean(g) - grand_mean) ** 2 for g in group_data)
-    ss_total = np.nansum((continuous - grand_mean) ** 2)
-    if ss_total == 0:
-        return np.nan
-    return ss_between / ss_total
+sys.path.insert(0, os.path.dirname(__file__))
+from utils import eta_squared
 
 
 def correlation_heatmap(output_dir: str, n_pcs: int = 20) -> None:
@@ -48,7 +37,7 @@ def correlation_heatmap(output_dir: str, n_pcs: int = 20) -> None:
     for var in cat_vars:
         valid = df[var].notna()
         for pc in available:
-            eta2 = _eta_squared(df.loc[valid, var], df.loc[valid, pc].values)
+            eta2 = eta_squared(df.loc[valid, var], df.loc[valid, pc].values)
             rows.append({"Variable": var, "PC": pc, "Metric": "η²", "Value": eta2})
     for var in cont_vars:
         valid = df[var].notna()
