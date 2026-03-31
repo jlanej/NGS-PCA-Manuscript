@@ -39,6 +39,14 @@ PALETTE_SUPERPOP = {
 }
 PALETTE_BATCH = {"698": "#1B9E77", "2504": "#D95F02"}
 PALETTE_SEX = {"M": "#4393C3", "F": "#D6604D"}
+POP_TO_SUPERPOP = {
+    "ACB": "AFR", "ASW": "AFR", "ESN": "AFR", "GWD": "AFR",
+    "LWK": "AFR", "MSL": "AFR", "YRI": "AFR",
+    "CLM": "AMR", "MXL": "AMR", "PEL": "AMR", "PUR": "AMR",
+    "CDX": "EAS", "CHB": "EAS", "CHS": "EAS", "JPT": "EAS", "KHV": "EAS",
+    "CEU": "EUR", "FIN": "EUR", "GBR": "EUR", "IBS": "EUR", "TSI": "EUR",
+    "BEB": "SAS", "GIH": "SAS", "ITU": "SAS", "PJL": "SAS", "STU": "SAS",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +63,22 @@ def _load_merged(output_dir: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t")
     df["RELEASE_BATCH"] = df["RELEASE_BATCH"].astype(str)
     return df
+
+
+def _load_full_merged_from_data_dir(data_dir: str) -> pd.DataFrame:
+    pcs_path = os.path.join(data_dir, "ngspca_output", "svd.pcs.txt")
+    qc_path = os.path.join(data_dir, "qc_output", "sample_qc.tsv")
+    pcs = pd.read_csv(pcs_path, sep="\t")
+    pcs["SAMPLE"] = pcs["SAMPLE"].str.replace(r"\.by1000\.$", "", regex=True)
+    qc = pd.read_csv(qc_path, sep="\t")
+    if "SUPERPOPULATION" in qc.columns:
+        qc = qc.rename(columns={"SUPERPOPULATION": "FAMILY_ROLE"})
+    qc["SUPERPOPULATION"] = qc["POPULATION"].map(POP_TO_SUPERPOP)
+    merged = pcs.merge(qc, left_on="SAMPLE", right_on="SAMPLE_ID", how="inner")
+    if "SAMPLE_ID" in merged.columns:
+        merged = merged.drop(columns=["SAMPLE_ID"])
+    merged["RELEASE_BATCH"] = merged["RELEASE_BATCH"].astype(str)
+    return merged
 
 
 def _count_available_samples(data_dir: str) -> int:
@@ -645,16 +669,15 @@ def _build_html(
         <p>
           NGS-PCA is designed to detect and characterise <strong>technical sources of variation</strong>
           in sequencing data — primarily batch effects arising from differences in library preparation,
-          sequencing runs, and read-depth profiles — without requiring genotype calls. It
-          <em>complements</em> genotype-based ancestry PCA rather than replacing it: ancestry PCA targets
-          allele-frequency differences between populations, whereas NGS-PCA targets coverage-level
-          technical variation. Key properties:
+          sequencing runs, and read-depth profiles — without requiring genotype calls. It is intended as
+          a sequencing quality-control and diagnostics view of the data, highlighting dominant coverage-level
+          structure that can otherwise be hard to detect from summary metrics alone. Key properties:
         </p>
         <ul>
-          <li><strong>Fast</strong> — SVD on a compact coverage matrix is orders of magnitude cheaper than
-              whole-genome variant calling.</li>
-          <li><strong>Genotype-free</strong> — no allele-frequency assumptions, no call-rate filters, no
-              linkage-disequilibrium pruning.</li>
+          <li><strong>Efficient</strong> — SVD is run directly on an existing samples × genomic-bins
+              coverage matrix, making turnaround practical for routine QC workflows.</li>
+          <li><strong>Coverage-signal based</strong> — analyses are derived from read-depth patterns, so
+              no genotype-calling step is required for this technical assessment.</li>
           <li><strong>Batch-effect focused</strong> — principal components primarily capture technical
               variation in sequencing depth, enabling quality-control diagnostics for sequencing
               studies.</li>
@@ -1551,10 +1574,16 @@ def generate_report(
     Returns the path to the written HTML file.
     """
     print("[06] Loading data …")
+    n_samples = _count_available_samples(data_dir)
     sv_df = _load_singular_values(data_dir)
     merged = _load_merged(output_dir)
+    if len(merged) != n_samples:
+        print(
+            "[06] Detected subsetted merged input "
+            f"({len(merged)} rows); rebuilding full merged table ({n_samples} rows) for report …"
+        )
+        merged = _load_full_merged_from_data_dir(data_dir)
 
-    n_samples = _count_available_samples(data_dir)
     n_populations = merged["POPULATION"].nunique()
     n_superpops = merged["SUPERPOPULATION"].nunique()
 
