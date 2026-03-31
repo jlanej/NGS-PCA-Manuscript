@@ -23,7 +23,7 @@ import pandas as pd
 import umap as umap_module
 
 sys.path.insert(0, os.path.dirname(__file__))
-from utils import eta_squared
+from utils import eta_squared, marchenko_pastur_pc_count_from_data_dir
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ def _compute_variance(sv_df: pd.DataFrame, n_pcs: int = 50):
     return prop[:n].tolist(), cum[:n].tolist(), n
 
 
-def _compute_umap(df: pd.DataFrame, n_pcs: int = 20):
+def _compute_umap(df: pd.DataFrame, n_pcs: int):
     pc_cols = [f"PC{i}" for i in range(1, n_pcs + 1)]
     available = [c for c in pc_cols if c in df.columns]
     X = df[available].values
@@ -128,9 +128,11 @@ def _build_html(
     variance_prop,
     variance_cum,
     n_scree,
+    mp_cutoff_pcs,
     scatter_data,
     umap1,
     umap2,
+    n_umap_pcs,
     assoc_rows,
     assoc_pcs,
     batch_records,
@@ -157,9 +159,11 @@ def _build_html(
         "variance_prop": variance_prop,
         "variance_cum": variance_cum,
         "n_scree": n_scree,
+        "mp_cutoff_pcs": mp_cutoff_pcs,
         "scatter": scatter_data,
         "umap1": umap1,
         "umap2": umap2,
+        "n_umap_pcs": n_umap_pcs,
         "assoc_rows": assoc_rows,
         "assoc_pcs": assoc_pcs,
         "batch_records": batch_records,
@@ -387,12 +391,12 @@ def _build_html(
     <div class="tab-content" id="tab-umap">
       <h2>UMAP Projection</h2>
       <p class="description">
-        Two-dimensional UMAP embedding computed from the top 20 principal components.
+        Two-dimensional UMAP embedding computed from a Marchenko–Pastur-selected number of principal components.
         UMAP preserves both local neighbourhood structure and global cluster separation.
       </p>
       <div class="plot-card">
         <div class="plot-card-header">
-          <h3>UMAP (20 PCs)</h3>
+          <h3 id="umap-title">UMAP (PCs)</h3>
           <div class="controls" id="ctrl-umap">
             <button class="active" data-color="superpop">Superpopulation</button>
             <button data-color="batch">Batch</button>
@@ -486,15 +490,26 @@ def _build_html(
       const pcs = DATA.variance_prop.map((_, i) => 'PC' + (i + 1));
       const pctProp = DATA.variance_prop.map(v => (v * 100));
       const pctCum  = DATA.variance_cum.map(v => (v * 100));
+      const cutoffPc = DATA.mp_cutoff_pcs;
+      const cutoffLabel = 'PC' + cutoffPc;
 
       Plotly.newPlot('scree-bar', [{
         x: pcs, y: pctProp, type: 'bar',
         marker: { color: pctProp, colorscale: [[0,'#38bdf8'],[1,'#818cf8']], line: { width: 0 } },
         hovertemplate: '%{x}: %{y:.2f}%<extra></extra>',
+      }, {
+        x: [cutoffLabel, cutoffLabel],
+        y: [0, Math.max(...pctProp) * 1.03],
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#f97316', width: 2, dash: 'dash' },
+        name: 'MP cutoff (' + cutoffPc + ' PCs)',
+        hovertemplate: 'Marchenko-Pastur cutoff: ' + cutoffPc + ' PCs<extra></extra>',
       }], {
         ...LAYOUT_BASE,
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45, dtick: 5 },
         yaxis: { ...LAYOUT_BASE.yaxis, title: '% Variance Explained' },
+        legend: { x: 0.65, y: 0.95, bgcolor: 'rgba(0,0,0,0)' },
       }, CFG);
 
       Plotly.newPlot('scree-cum', [{
@@ -510,6 +525,14 @@ def _build_html(
         x: pcs, y: pcs.map(() => 90), mode: 'lines', line: { dash: 'dot', color: '#94a3b8', width: 1 },
         showlegend: true, name: '90%',
         hoverinfo: 'skip',
+      }, {
+        x: [cutoffLabel, cutoffLabel],
+        y: [0, 105],
+        mode: 'lines',
+        line: { color: '#f97316', width: 2, dash: 'dash' },
+        showlegend: true,
+        name: 'MP cutoff (' + cutoffPc + ' PCs)',
+        hovertemplate: 'Marchenko-Pastur cutoff: ' + cutoffPc + ' PCs<extra></extra>',
       }], {
         ...LAYOUT_BASE,
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Number of PCs', tickangle: -45, dtick: 5 },
@@ -609,6 +632,7 @@ def _build_html(
       }, CFG);
     }
     plotUmap('superpop');
+    document.getElementById('umap-title').textContent = 'UMAP (' + DATA.n_umap_pcs + ' PCs, MP)';
     document.querySelectorAll('#ctrl-umap button').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('#ctrl-umap button').forEach(b => b.classList.remove('active'));
@@ -699,6 +723,7 @@ def generate_report(
     report_dir: str,
     n_pcs_scree: int = 50,
     n_pcs_assoc: int = 20,
+    n_pcs_umap_max: int = 0,
 ) -> str:
     """Generate the interactive HTML report.
 
@@ -714,12 +739,18 @@ def generate_report(
 
     print("[06] Computing variance explained …")
     var_prop, var_cum, n_scree = _compute_variance(sv_df, n_pcs_scree)
+    eigenvalues = sv_df["SINGULAR_VALUES"].values ** 2
+    max_pcs = n_pcs_umap_max if n_pcs_umap_max > 0 else None
+    mp_cutoff_pcs, _ = marchenko_pastur_pc_count_from_data_dir(
+        data_dir, eigenvalues, max_pcs=max_pcs
+    )
+    n_umap_pcs = mp_cutoff_pcs
 
     print("[06] Preparing scatter data …")
     scatter_data = _prepare_scatter_data(merged)
 
     print("[06] Computing UMAP embedding …")
-    umap1, umap2 = _compute_umap(merged)
+    umap1, umap2 = _compute_umap(merged, n_umap_pcs)
 
     print("[06] Computing PC–QC associations …")
     assoc_rows, assoc_pcs = _compute_associations(merged, n_pcs_assoc)
@@ -730,7 +761,8 @@ def generate_report(
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
-        scatter_data, umap1, umap2,
+        mp_cutoff_pcs,
+        scatter_data, umap1, umap2, n_umap_pcs,
         assoc_rows, assoc_pcs,
         batch_records, batch_pcs,
         n_samples, n_populations, n_superpops,
@@ -756,9 +788,11 @@ def main() -> None:
                         help="Directory for the HTML report (default: docs)")
     parser.add_argument("--n-pcs-scree", type=int, default=50)
     parser.add_argument("--n-pcs-assoc", type=int, default=20)
+    parser.add_argument("--n-pcs-umap-max", type=int, default=0,
+                        help="Optional upper bound for MP-selected UMAP PCs (0 = no cap)")
     args = parser.parse_args()
     generate_report(args.data_dir, args.output_dir, args.report_dir,
-                    args.n_pcs_scree, args.n_pcs_assoc)
+                    args.n_pcs_scree, args.n_pcs_assoc, args.n_pcs_umap_max)
 
 
 if __name__ == "__main__":

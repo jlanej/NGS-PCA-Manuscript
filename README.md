@@ -102,7 +102,7 @@ apptainer exec \
 | `scree_cumvar.png` | Scree plot and cumulative variance explained |
 | `pca_scatter_PC1_PC2.png` | PC1 vs PC2 coloured by superpopulation, batch, sex |
 | `pca_scatter_PC3_PC4.png` | PC3 vs PC4 coloured by superpopulation, batch, sex |
-| `umap_20pcs.png` | UMAP projection from 20 PCs |
+| `umap_<N>pcs.png` | UMAP projection from Marchenko–Pastur-selected PCs |
 | `correlation_heatmap.png` | PC × QC variable association heatmap (η² / r²) |
 | `pc_qc_associations.tsv` | Association statistics table |
 | `batch_vs_ancestry.png` | Batch vs ancestry η² grouped bar chart |
