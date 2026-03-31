@@ -138,9 +138,10 @@ class TestInteractiveReport:
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
-        for section in ["scree", "pca", "umap", "heatmap", "batch"]:
-            assert f'id="tab-{section}"' in content, \
-                f"Report missing tab section: {section}"
+        for section in ["intro", "scree", "pca", "umap",
+                        "confounding", "heatmap", "sex", "batch", "summary"]:
+            assert f'id="section-{section}"' in content, \
+                f"Report missing section: {section}"
 
     def test_report_mentions_marchenko_pastur_and_dynamic_umap_pcs(self):
         path = os.path.join(REPORT_DIR, "index.html")
@@ -148,6 +149,37 @@ class TestInteractiveReport:
             content = fh.read()
         assert "Marchenko-Pastur cutoff" in content
         assert "UMAP (' + DATA.n_umap_pcs + ' PCs, MP)'" in content
+
+    def test_report_is_single_page(self):
+        """Report should use scrollable sections, not hidden tabs."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "report-section" in content, "Should use report-section class"
+        assert 'id="toc-nav"' in content, "Should have TOC navigation"
+        assert "tab-content" not in content, "Should not use old tab-content class"
+
+    def test_report_has_confounding_assessment(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "confounding" in content.lower()
+        assert "chi2" in content or "χ²" in content or "chi-squared" in content.lower()
+        assert "cramers_v" in content or "Cram" in content
+
+    def test_report_has_sex_pc_analysis(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "sex_pc" in content or "point-biserial" in content.lower() or "pointbiserial" in content.lower()
+        assert "kruskal" in content.lower()
+
+    def test_report_has_summary_tables(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "summary-table" in content
+        assert "sample_summary" in content
 
     def test_report_uses_light_theme(self):
         path = os.path.join(REPORT_DIR, "index.html")
