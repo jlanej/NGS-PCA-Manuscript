@@ -531,29 +531,33 @@ def _build_html(
         </p>
         <h3>Why PCA on sequencing data?</h3>
         <p>
-          Population genetic studies routinely use PCA to reveal ancestry structure and detect outlier
-          samples. Traditionally this requires variant calling, which is computationally expensive and may
-          introduce genotyping artefacts. NGS-PCA bypasses genotype calls entirely, operating on raw
-          coverage profiles. This makes it:
+          NGS-PCA is designed to detect and characterise <strong>technical sources of variation</strong>
+          in sequencing data — primarily batch effects arising from differences in library preparation,
+          sequencing runs, and read-depth profiles — without requiring genotype calls. It
+          <em>complements</em> genotype-based ancestry PCA rather than replacing it: ancestry PCA targets
+          allele-frequency differences between populations, whereas NGS-PCA targets coverage-level
+          technical variation. Key properties:
         </p>
         <ul>
           <li><strong>Fast</strong> — SVD on a compact coverage matrix is orders of magnitude cheaper than
               whole-genome variant calling.</li>
           <li><strong>Genotype-free</strong> — no allele-frequency assumptions, no call-rate filters, no
               linkage-disequilibrium pruning.</li>
-          <li><strong>Sensitive to batch effects</strong> — technical variation in sequencing depth is
-              captured by PCs, enabling quality-control diagnostics alongside population structure.</li>
+          <li><strong>Batch-effect focused</strong> — principal components primarily capture technical
+              variation in sequencing depth, enabling quality-control diagnostics for sequencing
+              studies.</li>
         </ul>
         <h3>About this report</h3>
         <p>
           This interactive report applies NGS-PCA to the
           <strong>1000 Genomes Project</strong> dataset. We decompose the coverage matrix, visualise
           the resulting PCs, and quantify how much of the variation in each PC is attributable to
-          biological factors (continental ancestry, sex) versus technical factors (sequencing batch).
-          A key concern is <em>confounding</em> — if batches are enriched for specific populations or
-          sexes, batch effects can masquerade as biological signal. We formally test for such enrichment
-          and present effect-size metrics (η², Cramér's V, point-biserial <em>r</em>) so that readers
-          can assess the severity of any confounding.
+          technical factors (sequencing batch) versus biological factors (continental ancestry, sex).
+          Because NGS-PCA PCs primarily reflect coverage-level technical variation, batch effects are
+          expected to dominate the leading components. However, when batches are enriched for specific
+          populations or sexes, technical and biological signals can become <em>confounded</em>. We
+          formally test for such enrichment and present effect-size metrics (η², Cramér's V,
+          point-biserial <em>r</em>) so that readers can assess the severity of any confounding.
         </p>
       </div>
     </div>
@@ -584,9 +588,10 @@ def _build_html(
       <h2>PCA Scatter Plots</h2>
       <p class="description">
         Interactive scatter plots of principal component pairs.
-        Toggle the colour overlay to explore population structure, batch effects, and sex differences.
-        Clustering by superpopulation is expected on the leading PCs; visible batch separation may
-        indicate technical confounding.
+        Toggle the colour overlay to explore batch effects, population labels, and sex differences.
+        Because NGS-PCA PCs reflect coverage-level technical variation, visible batch separation is
+        expected on the leading PCs; any clustering by superpopulation may indicate that batches are
+        non-randomly distributed across populations.
       </p>
       <div class="grid-2">
         <div class="plot-card">
@@ -639,12 +644,14 @@ def _build_html(
     <div class="report-section" id="section-confounding">
       <h2>Confounding Assessment</h2>
       <p class="description">
-        Before interpreting PCA results, it is essential to check whether technical variables
-        (sequencing batch) are confounded with biological variables (ancestry, sex). If a batch
-        is enriched for a particular population, apparent "batch effects" on PCs may partly reflect
-        real ancestry structure, and vice versa. We use Pearson's χ² test of independence for each
-        pair and report Cramér's V as an effect size. Standardised residuals identify which specific
-        cells are over- or under-represented.
+        Before interpreting NGS-PCA results, it is important to check whether technical variables
+        (sequencing batch) are confounded with biological variables (ancestry, sex). Because
+        NGS-PCA PCs primarily capture coverage-level technical variation, batch effects are expected
+        to drive the leading components. However, if batches are enriched for particular populations
+        or sexes, apparent "batch effects" on PCs may be intertwined with biological signal, and vice
+        versa. We use Pearson's χ² test of independence for each pair and report Cramér's V as an
+        effect size. Standardised residuals identify which specific cells are over- or
+        under-represented.
       </p>
       <div id="confounding-cards"></div>
     </div>
@@ -685,8 +692,10 @@ def _build_html(
       <h2>Batch vs Ancestry Effect Sizes</h2>
       <p class="description">
         Compares η² (eta-squared) effect sizes of sequencing batch and continental ancestry
-        on each PC. Ideally, ancestry effects should dominate the leading PCs; large batch effects
-        indicate technical confounding that may warrant correction.
+        on each PC. Because NGS-PCA PCs capture coverage-level technical variation, batch effects
+        are expected to dominate the leading components. Large ancestry η² on the same PCs may
+        indicate that batches are non-randomly distributed across populations, warranting further
+        investigation.
       </p>
       <div class="plot-card">
         <div class="plot-card-header"><h3>η² per Principal Component</h3></div>
