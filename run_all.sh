@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./run_all.sh                          # full run
-#   NGSPCA_SUBSET=200 ./run_all.sh        # quick CI run
+#   NGSPCA_SUBSET=1000 ./run_all.sh       # quick CI run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${NGSPCA_DATA_DIR:-1000G}"

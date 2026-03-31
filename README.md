@@ -47,8 +47,8 @@ pip install -r requirements.txt
 # Full run (all 3 202 samples)
 bash run_all.sh
 
-# Quick subset run (200 samples)
-NGSPCA_SUBSET=200 bash run_all.sh
+# Quick subset run (1000 samples)
+NGSPCA_SUBSET=1000 bash run_all.sh
 
 # Run tests
 NGSPCA_OUTPUT_DIR=output pytest tests/ -v
@@ -69,7 +69,7 @@ docker run --rm \
 docker run --rm \
   -v "$(pwd)/1000G:/data" \
   -v "$(pwd)/output:/output" \
-  -e NGSPCA_SUBSET=200 \
+  -e NGSPCA_SUBSET=1000 \
   ngspca-manuscript
 ```
 
@@ -113,7 +113,7 @@ apptainer exec \
 
 - **`build-and-publish.yml`** – Builds the Docker image and pushes to GHCR on
   pushes to `main` and version tags.
-- **`ci-analysis.yml`** – Runs the full pipeline on a 200-sample subset,
+- **`ci-analysis.yml`** – Runs the full pipeline on a 1000-sample subset,
   executes the test suite, and uploads output artifacts.
 
 ## License

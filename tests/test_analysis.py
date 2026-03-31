@@ -115,6 +115,21 @@ class TestInteractiveReport:
             assert f'id="tab-{section}"' in content, \
                 f"Report missing tab section: {section}"
 
+    def test_report_uses_light_theme(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "--bg: #f8fafc;" in content
+        assert "plot_bgcolor: '#ffffff'" in content
+
+
+class TestCiConfiguration:
+    def test_ci_subset_is_1000(self):
+        path = os.path.join(".github", "workflows", "ci-analysis.yml")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'NGSPCA_SUBSET: "1000"' in content
+
 
 # ---------------------------------------------------------------------------
 # Scientific validation tests
