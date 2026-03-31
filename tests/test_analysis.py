@@ -7,7 +7,9 @@ Tests cover:
  - Scientific validation of batch vs ancestry effect sizes
 """
 
+import json
 import os
+import re
 
 from PIL import Image
 import numpy as np
@@ -151,6 +153,23 @@ class TestInteractiveReport:
         qc_samples = set(qc["SAMPLE_ID"])
         n_available = len(pcs_samples & qc_samples)
         assert f'"n_samples": {n_available}' in content
+
+    def test_report_scatter_uses_all_available_samples(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        pcs_path = os.path.join(DATA_DIR, "ngspca_output", "svd.pcs.txt")
+        qc_path = os.path.join(DATA_DIR, "qc_output", "sample_qc.tsv")
+        pcs = pd.read_csv(pcs_path, sep="\t")
+        qc = pd.read_csv(qc_path, sep="\t")
+        pcs_samples = set(pcs["SAMPLE"].str.replace(PC_SAMPLE_SUFFIX_PATTERN, "", regex=True))
+        qc_samples = set(qc["SAMPLE_ID"])
+        n_available = len(pcs_samples & qc_samples)
+        match = re.search(r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE", content, re.DOTALL)
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        assert payload["n_samples"] == n_available
+        assert len(payload["scatter"]["SAMPLE"]) == n_available
 
     def test_report_has_all_sections(self):
         path = os.path.join(REPORT_DIR, "index.html")
