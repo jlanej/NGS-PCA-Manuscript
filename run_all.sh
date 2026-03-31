@@ -37,7 +37,8 @@ python "${SCRIPT_DIR}/scripts/02_pca_scatter.py" --output-dir "${OUTPUT_DIR}"
 
 echo ""
 echo "[Step 3] UMAP projection …"
-python "${SCRIPT_DIR}/scripts/03_umap_projection.py" --output-dir "${OUTPUT_DIR}"
+python "${SCRIPT_DIR}/scripts/03_umap_projection.py" \
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
 
 echo ""
 echo "[Step 4] Correlation heatmap …"

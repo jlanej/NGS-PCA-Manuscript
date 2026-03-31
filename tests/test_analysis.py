@@ -9,11 +9,17 @@ Tests cover:
 
 import os
 
+from PIL import Image
 import numpy as np
 import pandas as pd
 import pytest
 
 OUTPUT_DIR = os.environ.get("NGSPCA_OUTPUT_DIR", "output")
+ORANGE_R_MIN = 220
+ORANGE_G_MIN = 90
+ORANGE_G_MAX = 180
+ORANGE_B_MAX = 80
+MIN_ORANGE_PIXELS = 100
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +79,6 @@ EXPECTED_FILES = [
     "scree_cumvar.png",
     "pca_scatter_PC1_PC2.png",
     "pca_scatter_PC3_PC4.png",
-    "umap_20pcs.png",
     "correlation_heatmap.png",
     "pc_qc_associations.tsv",
     "batch_vs_ancestry.png",
@@ -91,6 +96,28 @@ class TestOutputFiles:
         path = os.path.join(OUTPUT_DIR, filename)
         assert os.path.isfile(path), f"Missing output: {path}"
         assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+    def test_umap_output_matches_pc_count(self):
+        path = os.path.join(OUTPUT_DIR, "merged_pcs_qc.tsv")
+        merged = pd.read_csv(path, sep="\t")
+        pc_cols = [c for c in merged.columns if c.startswith("PC")]
+        files = [f for f in os.listdir(OUTPUT_DIR)
+                 if f.startswith("umap_") and f.endswith("pcs.png")]
+        assert len(files) == 1, f"Expected one UMAP figure, found: {files}"
+        used_pcs = int(files[0].split("_")[1].replace("pcs.png", ""))
+        assert 2 <= used_pcs <= len(pc_cols), "UMAP PC count should be in valid range"
+
+    def test_scree_plot_cutoff_annotation_present(self):
+        path = os.path.join(OUTPUT_DIR, "scree_cumvar.png")
+        with Image.open(path) as img:
+            arr = np.array(img.convert("RGB"))
+        orange_like = ((arr[:, :, 0] > ORANGE_R_MIN)
+                       & (arr[:, :, 1] > ORANGE_G_MIN)
+                       & (arr[:, :, 1] < ORANGE_G_MAX)
+                       & (arr[:, :, 2] < ORANGE_B_MAX))
+        assert orange_like.sum() > MIN_ORANGE_PIXELS, (
+            "Expected orange MP cutoff annotation on scree plot"
+        )
 
 
 class TestInteractiveReport:
@@ -114,6 +141,13 @@ class TestInteractiveReport:
         for section in ["scree", "pca", "umap", "heatmap", "batch"]:
             assert f'id="tab-{section}"' in content, \
                 f"Report missing tab section: {section}"
+
+    def test_report_mentions_marchenko_pastur_and_dynamic_umap_pcs(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Marchenko-Pastur cutoff" in content
+        assert "UMAP (' + DATA.n_umap_pcs + ' PCs, MP)'" in content
 
     def test_report_uses_light_theme(self):
         path = os.path.join(REPORT_DIR, "index.html")
