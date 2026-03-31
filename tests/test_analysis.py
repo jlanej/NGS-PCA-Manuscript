@@ -82,12 +82,38 @@ EXPECTED_FILES = [
 ]
 
 
+REPORT_DIR = os.environ.get("NGSPCA_REPORT_DIR", "docs")
+
+
 class TestOutputFiles:
     @pytest.mark.parametrize("filename", EXPECTED_FILES)
     def test_file_exists_and_nonempty(self, filename):
         path = os.path.join(OUTPUT_DIR, filename)
         assert os.path.isfile(path), f"Missing output: {path}"
         assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+
+class TestInteractiveReport:
+    def test_report_exists(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        assert os.path.isfile(path), f"Missing interactive report: {path}"
+        assert os.path.getsize(path) > 0, f"Empty interactive report: {path}"
+
+    def test_report_contains_plotly(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "plotly" in content.lower(), "Report should reference Plotly"
+        assert "Plotly.newPlot" in content or "Plotly.react" in content, \
+            "Report should contain Plotly chart calls"
+
+    def test_report_has_all_sections(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        for section in ["scree", "pca", "umap", "heatmap", "batch"]:
+            assert f'id="tab-{section}"' in content, \
+                f"Report missing tab section: {section}"
 
 
 # ---------------------------------------------------------------------------

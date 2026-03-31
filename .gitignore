@@ -3,6 +3,9 @@ output/
 figures/
 results/
 
+# Generated interactive report (rebuilt by pipeline)
+docs/index.html
+
 # Python
 __pycache__/
 *.pyc
