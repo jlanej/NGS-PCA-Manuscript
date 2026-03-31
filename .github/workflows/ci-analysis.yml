@@ -42,3 +42,10 @@ jobs:
         with:
           name: analysis-output
           path: output/
+
+      - name: Upload interactive report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interactive-report
+          path: docs/
