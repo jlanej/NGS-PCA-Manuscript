@@ -134,6 +134,12 @@ class TestInteractiveReport:
         assert "Plotly.newPlot" in content or "Plotly.react" in content, \
             "Report should contain Plotly chart calls"
 
+    def test_report_uses_1000_samples(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert '"n_samples": 1000' in content
+
     def test_report_has_all_sections(self):
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
