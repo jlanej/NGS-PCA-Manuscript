@@ -226,12 +226,15 @@ def _compute_sample_summary(df: pd.DataFrame):
 
 
 def _ols_r2(X: np.ndarray, y: np.ndarray) -> float:
-    """Compute R² for OLS regression of *y* on *X* (no intercept in X)."""
+    """Compute R² for OLS regression of *y* on *X* (no intercept in X).
+
+    An intercept column is added automatically.
+    """
     n = X.shape[0]
     X_int = np.column_stack([np.ones(n), X])
     try:
         beta, _, _, _ = np.linalg.lstsq(X_int, y, rcond=None)
-        y_hat = X_int @ beta
+        y_hat = X_int @ beta  # requires Python ≥3.5 / NumPy ≥1.10
         ss_res = np.sum((y - y_hat) ** 2)
         ss_tot = np.sum((y - y.mean()) ** 2)
         return 0.0 if ss_tot == 0 else float(1.0 - ss_res / ss_tot)
@@ -256,6 +259,8 @@ def _compute_variance_partitioning(df: pd.DataFrame, n_pcs: int = 20):
 
     batch_dum = pd.get_dummies(sub["RELEASE_BATCH"], prefix="b", dtype=float)
     anc_dum = pd.get_dummies(sub["SUPERPOPULATION"], prefix="a", dtype=float)
+    # Drop one level per factor to avoid the dummy-variable trap
+    # (perfect multicollinearity) in OLS regression.
     if batch_dum.shape[1] > 1:
         batch_dum = batch_dum.iloc[:, 1:]
     if anc_dum.shape[1] > 1:
@@ -273,6 +278,10 @@ def _compute_variance_partitioning(df: pd.DataFrame, n_pcs: int = 20):
         r2_full = _ols_r2(X_full, y)
         r2_batch = _ols_r2(batch_dum.values, y)
         r2_ancestry = _ols_r2(anc_dum.values, y)
+        # Inclusion/exclusion R² decomposition (Venn-diagram approach):
+        #   unique_batch    = R²_full − R²_ancestry   (batch adds beyond ancestry)
+        #   unique_ancestry = R²_full − R²_batch       (ancestry adds beyond batch)
+        #   shared          = R²_batch + R²_ancestry − R²_full  (confounded)
         unique_batch = r2_full - r2_ancestry
         unique_ancestry = r2_full - r2_batch
         shared = r2_batch + r2_ancestry - r2_full
@@ -954,19 +963,21 @@ def _build_html(
     /*  HELPER: Pearson and Spearman correlation at runtime                */
     /* ------------------------------------------------------------------ */
     function pearsonCorr(x, y) {
+      /* Require ≥10 valid pairs to guard against misleading estimates. */
       var n = x.length, sumX=0, sumY=0, sumXY=0, sumX2=0, sumY2=0, cnt=0;
       for (var i=0; i<n; i++) {
         if (x[i]==null || y[i]==null || isNaN(x[i]) || isNaN(y[i])) continue;
         sumX+=x[i]; sumY+=y[i]; sumXY+=x[i]*y[i];
         sumX2+=x[i]*x[i]; sumY2+=y[i]*y[i]; cnt++;
       }
-      if (cnt < 3) return 0;
+      if (cnt < 10) return 0;
       var num = cnt*sumXY - sumX*sumY;
       var den = Math.sqrt((cnt*sumX2-sumX*sumX)*(cnt*sumY2-sumY*sumY));
       return den === 0 ? 0 : num/den;
     }
 
     function rankArray(arr) {
+      /* Tied values receive the average of the ranks they span (mid-rank). */
       var indexed = [];
       for (var i=0; i<arr.length; i++) {
         if (arr[i]!=null && !isNaN(arr[i])) indexed.push({v:arr[i], i:i});

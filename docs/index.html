@@ -599,19 +599,21 @@ function populateColorSelect(id) {
 /*  HELPER: Pearson and Spearman correlation at runtime                */
 /* ------------------------------------------------------------------ */
 function pearsonCorr(x, y) {
+  /* Require ≥10 valid pairs to guard against misleading estimates. */
   var n = x.length, sumX=0, sumY=0, sumXY=0, sumX2=0, sumY2=0, cnt=0;
   for (var i=0; i<n; i++) {
     if (x[i]==null || y[i]==null || isNaN(x[i]) || isNaN(y[i])) continue;
     sumX+=x[i]; sumY+=y[i]; sumXY+=x[i]*y[i];
     sumX2+=x[i]*x[i]; sumY2+=y[i]*y[i]; cnt++;
   }
-  if (cnt < 3) return 0;
+  if (cnt < 10) return 0;
   var num = cnt*sumXY - sumX*sumY;
   var den = Math.sqrt((cnt*sumX2-sumX*sumX)*(cnt*sumY2-sumY*sumY));
   return den === 0 ? 0 : num/den;
 }
 
 function rankArray(arr) {
+  /* Tied values receive the average of the ranks they span (mid-rank). */
   var indexed = [];
   for (var i=0; i<arr.length; i++) {
     if (arr[i]!=null && !isNaN(arr[i])) indexed.push({v:arr[i], i:i});
