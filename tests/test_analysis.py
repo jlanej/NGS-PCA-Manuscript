@@ -157,7 +157,8 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "heatmap", "sex", "batch", "summary"]:
+                        "confounding", "partitioning", "heatmap",
+                        "sex", "batch", "summary"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
 
@@ -205,6 +206,53 @@ class TestInteractiveReport:
             content = fh.read()
         assert "--bg: #f8fafc;" in content
         assert "plot_bgcolor: '#ffffff'" in content
+
+    def test_report_has_variance_partitioning(self):
+        """Variance partitioning section should be present with its stacked bar chart."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "variance_partitioning" in content
+        assert "unique_batch" in content
+        assert "unique_ancestry" in content
+        assert "partitioning-bar" in content
+
+    def test_report_has_3d_pca_scatter(self):
+        """PCA scatter should use scatter3d with selectable PC axes."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "scatter3d" in content, "Report should use 3D scatter"
+        assert "pca-scatter" in content, "Report should have pca-scatter div"
+        assert "pca-x" in content, "Report should have PC X selector"
+        assert "pca-y" in content, "Report should have PC Y selector"
+        assert "pca-z" in content, "Report should have PC Z selector"
+
+    def test_report_has_continuous_color_option(self):
+        """Report should support continuous heatmap coloring on scatter plots."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "numeric_cols" in content, "Report should include numeric_cols"
+        assert "Viridis" in content, "Report should use Viridis colorscale"
+        assert "pca-color" in content, "Report should have PCA colour selector"
+
+    def test_report_has_correlation_bar_charts(self):
+        """Report should compute runtime Pearson/Spearman correlations."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "pearsonCorr" in content, "Report should compute Pearson r"
+        assert "spearmanCorr" in content, "Report should compute Spearman rho"
+        assert "pca-panel2" in content, "Report should have PCA panel 2 div"
+
+    def test_report_has_umap_second_panel(self):
+        """UMAP should have a second panel for distributions / correlations."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "umap-panel2" in content, "Report should have UMAP panel 2 div"
+        assert "umap-color" in content, "Report should have UMAP colour selector"
 
 
 class TestCiConfiguration:
