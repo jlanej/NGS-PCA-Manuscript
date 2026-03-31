@@ -3,8 +3,7 @@ output/
 figures/
 results/
 
-# Generated interactive report (rebuilt by pipeline)
-docs/index.html
+# Generated interactive report
 
 # Python
 __pycache__/
