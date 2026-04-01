@@ -1600,27 +1600,23 @@ def _build_html(
         umapSlider.hide();
         hideFilterInfo('umap');
         var pal = CAT_PALS[col] || {};
-        var groups = {};
+        var vals = S[col] || [];
+        var colors = [];
+        var labels = [];
         for (var i=0; i<DATA.umap1.length; i++) {
-          var g = S[col] ? S[col][i] : null;
-          if (g == null) continue;
-          if (!groups[g]) groups[g] = {x:[],y:[],text:[]};
-          groups[g].x.push(DATA.umap1[i]); groups[g].y.push(DATA.umap2[i]);
-          groups[g].text.push(ids[i]);
+          var g = vals[i];
+          labels.push(g == null ? 'NA' : String(g));
+          colors.push((g != null && pal[g]) ? pal[g] : '#888');
         }
-        var traces = Object.entries(groups).map(function(e) {
-          var name = e[0], d = e[1];
-          return {
-            x:d.x, y:d.y, text:d.text, type:'scattergl', mode:'markers', name:name,
-            marker:{color:pal[name]||'#888', size:5, opacity:0.8},
-            hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<extra>'+name+'</extra>',
-          };
-        });
-        Plotly.react('umap-plot', traces, {
+        Plotly.react('umap-plot', [{
+          x:DATA.umap1, y:DATA.umap2, text:ids, customdata:labels,
+          type:'scattergl', mode:'markers',
+          marker:{color:colors, size:5, opacity:0.8},
+          hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{customdata}<extra></extra>',
+        }], {
           ...LAYOUT_BASE,
-          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1'},
-          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2'},
-          legend:{bgcolor:'rgba(0,0,0,0)', font:{size:11}},
+          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1', type:'linear'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2', type:'linear'},
           margin:{t:15,r:15,b:50,l:60},
         }, CFG);
       } else {
@@ -1642,8 +1638,8 @@ def _build_html(
           hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
         }], {
           ...LAYOUT_BASE,
-          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1'},
-          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2'},
+          xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP-1', type:'linear'},
+          yaxis:{...LAYOUT_BASE.yaxis, title:'UMAP-2', type:'linear'},
           margin:{t:15,r:15,b:50,l:60},
         }, CFG);
       }
