@@ -1139,14 +1139,13 @@ def _build_html(
     /* ------------------------------------------------------------------ */
     /*  HELPER: filter-removed-points info banner                         */
     /* ------------------------------------------------------------------ */
-    function updateFilterInfo(prefix, total, inRange) {
+    function updateFilterInfo(prefix, totalN, loVal, hiVal, dataMin, dataMax) {
       var el = document.getElementById(prefix + '-filter-info');
       if (!el) return;
-      var removed = total - inRange;
-      if (removed <= 0) { el.classList.remove('visible'); return; }
-      el.innerHTML = 'Showing <strong>' + inRange + '</strong> of ' + total +
-        ' points \u2014 <strong style="color:var(--amber)">' + removed +
-        '</strong> removed by slider filter';
+      if (loVal <= dataMin && hiVal >= dataMax) { el.classList.remove('visible'); return; }
+      el.innerHTML = 'Colorscale clamped to <strong>' + loVal.toPrecision(4) + '</strong>'
+        + ' \u2013 <strong>' + hiVal.toPrecision(4) + '</strong>'
+        + ' \u2014 all <strong>' + totalN + '</strong> points shown';
       el.classList.add('visible');
     }
     function hideFilterInfo(prefix) {
@@ -1300,21 +1299,11 @@ def _build_html(
           pcaSlider.show(dMin, dMax); pcaSlider._inited = true; pcaSlider._col = col;
         }
         var rng = pcaSlider.getRange();
-        // Filter to points within the slider range; track how many are excluded
-        var xF=[], yF=[], zF=[], tF=[], cF=[], totalValid=0;
-        for (var i=0; i<S.SAMPLE.length; i++) {
-          if (vals[i]==null || !isFinite(vals[i])) continue;
-          totalValid++;
-          if (vals[i] >= rng[0] && vals[i] <= rng[1]) {
-            xF.push(S[xKey][i]); yF.push(S[yKey][i]); zF.push(S[zKey][i]);
-            tF.push(S.SAMPLE[i]); cF.push(vals[i]);
-          }
-        }
-        updateFilterInfo('pca', totalValid, xF.length);
+        updateFilterInfo('pca', finite.length, rng[0], rng[1], dMin, dMax);
         Plotly.react('pca-scatter', [{
-          x:xF, y:yF, z:zF, text:tF,
+          x:S[xKey], y:S[yKey], z:S[zKey], text:S.SAMPLE,
           type:'scatter3d', mode:'markers',
-          marker: {color:cF, colorscale:'Viridis', size:3, opacity:0.8,
+          marker: {color:vals, colorscale:'Viridis', size:3, opacity:0.8,
                    cmin:rng[0], cmax:rng[1],
                    colorbar:{title:col,titleside:'right'}},
           hovertemplate: '%{text}<br>'+xKey+':%{x:.3f}<br>'+yKey+':%{y:.3f}<br>'+zKey+':%{z:.3f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
@@ -1386,28 +1375,18 @@ def _build_html(
       } else {
         var metric = S[col] || [];
         var rng = pcaSlider.getRange();
-        // Split metric values into in-range vs excluded
-        var inVals=[], outVals=[];
+        var allVals = [];
         for (var i=0; i<metric.length; i++) {
-          if (metric[i]==null || !isFinite(metric[i])) continue;
-          if (metric[i]>=rng[0] && metric[i]<=rng[1]) inVals.push(metric[i]);
-          else outVals.push(metric[i]);
+          if (metric[i]!=null && isFinite(metric[i])) allVals.push(metric[i]);
         }
         var pearsonVals = PCA_PCS.map(function(pc){return pearsonCorr(S[pc], metric);});
         var spearmanVals = PCA_PCS.map(function(pc){return spearmanCorr(S[pc], metric);});
         var distTraces = [];
-        if (inVals.length > 0) {
+        if (allVals.length > 0) {
           distTraces.push({
-            y:inVals, type:'violin', name:'In range', x0:'In range',
+            y:allVals, type:'violin', name:col, x0:col,
             marker:{color:'#6366f1'}, box:{visible:true}, meanline:{visible:true},
-            xaxis:'x', yaxis:'y',
-          });
-        }
-        if (outVals.length > 0) {
-          distTraces.push({
-            y:outVals, type:'violin', name:'Excluded', x0:'Excluded',
-            marker:{color:'#94a3b8'}, box:{visible:true}, meanline:{visible:true},
-            xaxis:'x', yaxis:'y',
+            xaxis:'x', yaxis:'y', showlegend:false,
           });
         }
         distTraces.push({
@@ -1429,8 +1408,14 @@ def _build_html(
           yaxis:{domain:[0.42,1], ...LAYOUT_BASE.yaxis, title:'Value'},
           xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Principal Component'},
           yaxis2:{domain:[0,0.35], ...LAYOUT_BASE.yaxis, title:'Correlation'},
-          shapes:[{type:'line', x0:-0.5, x1:PCA_PCS.length-0.5, y0:0, y1:0,
-                   xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}}],
+          shapes:[
+            {type:'line', y0:rng[0], y1:rng[0], x0:0, x1:1, xref:'paper', yref:'y',
+             line:{color:'#f97316', width:2, dash:'dash'}},
+            {type:'line', y0:rng[1], y1:rng[1], x0:0, x1:1, xref:'paper', yref:'y',
+             line:{color:'#f97316', width:2, dash:'dash'}},
+            {type:'line', x0:-0.5, x1:PCA_PCS.length-0.5, y0:0, y1:0,
+             xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}},
+          ],
           legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
           margin:{t:15,r:20,b:50,l:60},
         }, CFG);
@@ -1491,21 +1476,11 @@ def _build_html(
           umapSlider.show(dMin, dMax); umapSlider._inited = true; umapSlider._col = col;
         }
         var rng = umapSlider.getRange();
-        // Filter to points within the slider range
-        var u1F=[], u2F=[], tF2=[], cF2=[], totalValidU=0;
-        for (var i=0; i<DATA.umap1.length; i++) {
-          if (vals[i]==null || !isFinite(vals[i])) continue;
-          totalValidU++;
-          if (vals[i] >= rng[0] && vals[i] <= rng[1]) {
-            u1F.push(DATA.umap1[i]); u2F.push(DATA.umap2[i]);
-            tF2.push(ids[i]); cF2.push(vals[i]);
-          }
-        }
-        updateFilterInfo('umap', totalValidU, u1F.length);
+        updateFilterInfo('umap', finite.length, rng[0], rng[1], dMin, dMax);
         Plotly.react('umap-plot', [{
-          x:u1F, y:u2F, text:tF2,
+          x:DATA.umap1, y:DATA.umap2, text:ids,
           type:'scattergl', mode:'markers',
-          marker:{color:cF2, colorscale:'Viridis', size:5, opacity:0.8,
+          marker:{color:vals, colorscale:'Viridis', size:5, opacity:0.8,
                   cmin:rng[0], cmax:rng[1],
                   colorbar:{title:col,titleside:'right'}},
           hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
@@ -1577,27 +1552,18 @@ def _build_html(
       } else {
         var metric = S[col] || [];
         var rng = umapSlider.getRange();
-        var inValsU=[], outValsU=[];
+        var allValsU = [];
         for (var i=0; i<metric.length; i++) {
-          if (metric[i]==null || !isFinite(metric[i])) continue;
-          if (metric[i]>=rng[0] && metric[i]<=rng[1]) inValsU.push(metric[i]);
-          else outValsU.push(metric[i]);
+          if (metric[i]!=null && isFinite(metric[i])) allValsU.push(metric[i]);
         }
         var pVals = dims.map(function(_,di){return pearsonCorr(dimData[di], metric);});
         var sVals = dims.map(function(_,di){return spearmanCorr(dimData[di], metric);});
         var distTracesU = [];
-        if (inValsU.length > 0) {
+        if (allValsU.length > 0) {
           distTracesU.push({
-            y:inValsU, type:'violin', name:'In range', x0:'In range',
+            y:allValsU, type:'violin', name:col, x0:col,
             marker:{color:'#6366f1'}, box:{visible:true}, meanline:{visible:true},
-            xaxis:'x', yaxis:'y',
-          });
-        }
-        if (outValsU.length > 0) {
-          distTracesU.push({
-            y:outValsU, type:'violin', name:'Excluded', x0:'Excluded',
-            marker:{color:'#94a3b8'}, box:{visible:true}, meanline:{visible:true},
-            xaxis:'x', yaxis:'y',
+            xaxis:'x', yaxis:'y', showlegend:false,
           });
         }
         distTracesU.push({
@@ -1619,8 +1585,14 @@ def _build_html(
           yaxis:{domain:[0.42,1], ...LAYOUT_BASE.yaxis, title:'Value'},
           xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Dimension'},
           yaxis2:{domain:[0,0.35], ...LAYOUT_BASE.yaxis, title:'Correlation'},
-          shapes:[{type:'line', x0:-0.5, x1:1.5, y0:0, y1:0,
-                   xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}}],
+          shapes:[
+            {type:'line', y0:rng[0], y1:rng[0], x0:0, x1:1, xref:'paper', yref:'y',
+             line:{color:'#f97316', width:2, dash:'dash'}},
+            {type:'line', y0:rng[1], y1:rng[1], x0:0, x1:1, xref:'paper', yref:'y',
+             line:{color:'#f97316', width:2, dash:'dash'}},
+            {type:'line', x0:-0.5, x1:1.5, y0:0, y1:0,
+             xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}},
+          ],
           legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
           margin:{t:15,r:20,b:50,l:60},
         }, CFG);

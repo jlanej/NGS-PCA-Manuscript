@@ -320,7 +320,7 @@ class TestInteractiveReport:
         assert "ANOVA" in content, "Report should mention ANOVA"
 
     def test_report_has_filter_info_elements(self):
-        """Report should have filter-info banners for both PCA and UMAP sliders."""
+        """Report should have colorscale-clamping info banners for PCA and UMAP sliders."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
@@ -329,7 +329,7 @@ class TestInteractiveReport:
         assert "filter-info" in content, "Report should have filter-info CSS class"
         assert "updateFilterInfo" in content, "Report should have updateFilterInfo function"
         assert "hideFilterInfo" in content, "Report should have hideFilterInfo function"
-        assert "removed by slider filter" in content, "Report should contain removed-points message"
+        assert "Colorscale clamped to" in content, "Report should describe colorscale clamping"
 
     def test_report_has_violin_plots(self):
         """Companion panels should use violin+box plots for categorical colour."""
@@ -351,7 +351,7 @@ class TestInteractiveReport:
         assert "% of samples" in content, "Proportion chart should label x-axis as % of samples"
 
     def test_report_continuous_companion_has_distribution(self):
-        """Continuous companion panels should show metric distribution alongside correlations."""
+        """Continuous companion panels should show metric distribution with slider cutoff lines."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
@@ -359,16 +359,16 @@ class TestInteractiveReport:
             "Continuous PCA companion title should mention Distribution"
         assert "Distribution & UMAP Correlation" in content, \
             "Continuous UMAP companion title should mention Distribution"
-        assert "In range" in content, "Distribution violin should label in-range values"
-        assert "Excluded" in content, "Distribution violin should label excluded values"
+        assert "y0:rng[0]" in content, "Distribution violin should have low cutoff line shape"
+        assert "y0:rng[1]" in content, "Distribution violin should have high cutoff line shape"
 
-    def test_report_slider_filters_scatter_data(self):
-        """plotPCA and plotUmap should filter scatter points to the slider range."""
+    def test_report_slider_clamps_colorscale(self):
+        """Sliders clamp the colorscale (cmin/cmax) while keeping all points in scatter."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
-        assert "totalValid" in content, "plotPCA should track totalValid point count"
-        assert "totalValidU" in content, "plotUmap should track totalValidU point count"
+        assert "cmin:rng[0]" in content, "Scatter should use cmin to clamp colorscale low"
+        assert "cmax:rng[1]" in content, "Scatter should use cmax to clamp colorscale high"
         assert "updateFilterInfo" in content, "Scatter functions should call updateFilterInfo"
 
 
