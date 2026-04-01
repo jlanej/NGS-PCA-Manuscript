@@ -228,6 +228,18 @@ nav.toc a.active {
   border-radius: 50%; background: var(--accent); cursor: pointer;
 }
 .range-slider-wrap .range-label { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+/* Filter-removed points info banner (shown when slider excludes points) */
+.filter-info {
+  display: none;
+  font-size: 0.8rem;
+  padding: 0.28rem 0.75rem;
+  margin: 0.3rem 0 0 0;
+  border-radius: 0.3rem;
+  background: #fffbeb;
+  border-left: 3px solid var(--amber);
+  color: #92400e;
+}
+.filter-info.visible { display: block; }
 .confound-card h4 { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.5rem; }
 .confound-card .stat-row {
   display: flex;
@@ -389,11 +401,12 @@ footer {
       <span class="range-label" id="pca-range-hi-label">100</span>
       <button id="pca-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
     </div>
+    <div class="filter-info" id="pca-filter-info"></div>
     <div class="plot-card-body"><div id="pca-scatter" style="height:560px"></div></div>
   </div>
   <div class="plot-card">
     <div class="plot-card-header"><h3 id="pca-panel2-title">Distribution</h3></div>
-    <div class="plot-card-body"><div id="pca-panel2" style="height:460px"></div></div>
+    <div class="plot-card-body"><div id="pca-panel2" style="height:560px"></div></div>
   </div>
 </div>
 
@@ -421,6 +434,7 @@ footer {
         <span class="range-label" id="umap-range-hi-label">100</span>
         <button id="umap-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
       </div>
+      <div class="filter-info" id="umap-filter-info"></div>
       <div class="plot-card-body"><div id="umap-plot" style="height:560px"></div></div>
     </div>
     <div class="plot-card">
@@ -686,6 +700,24 @@ function initRangeSlider(prefix, plotFn) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  HELPER: filter-removed-points info banner                         */
+/* ------------------------------------------------------------------ */
+function updateFilterInfo(prefix, total, inRange) {
+  var el = document.getElementById(prefix + '-filter-info');
+  if (!el) return;
+  var removed = total - inRange;
+  if (removed <= 0) { el.classList.remove('visible'); return; }
+  el.innerHTML = 'Showing <strong>' + inRange + '</strong> of ' + total +
+    ' points — <strong style="color:var(--amber)">' + removed +
+    '</strong> removed by slider filter';
+  el.classList.add('visible');
+}
+function hideFilterInfo(prefix) {
+  var el = document.getElementById(prefix + '-filter-info');
+  if (el) el.classList.remove('visible');
+}
+
+/* ------------------------------------------------------------------ */
 /*  HELPER: Pearson and Spearman correlation at runtime                */
 /* ------------------------------------------------------------------ */
 function pearsonCorr(x, y) {
@@ -800,6 +832,7 @@ function plotPCA() {
 
   if (cType === 'cat') {
     pcaSlider.hide();
+    hideFilterInfo('pca');
     var pal = CAT_PALS[col] || {};
     var groups = {};
     for (var i=0; i<S.SAMPLE.length; i++) {
@@ -830,10 +863,21 @@ function plotPCA() {
       pcaSlider.show(dMin, dMax); pcaSlider._inited = true; pcaSlider._col = col;
     }
     var rng = pcaSlider.getRange();
+    // Filter to points within the slider range; track how many are excluded
+    var xF=[], yF=[], zF=[], tF=[], cF=[], totalValid=0;
+    for (var i=0; i<S.SAMPLE.length; i++) {
+      if (vals[i]==null || !isFinite(vals[i])) continue;
+      totalValid++;
+      if (vals[i] >= rng[0] && vals[i] <= rng[1]) {
+        xF.push(S[xKey][i]); yF.push(S[yKey][i]); zF.push(S[zKey][i]);
+        tF.push(S.SAMPLE[i]); cF.push(vals[i]);
+      }
+    }
+    updateFilterInfo('pca', totalValid, xF.length);
     Plotly.react('pca-scatter', [{
-      x:S[xKey], y:S[yKey], z:S[zKey], text:S.SAMPLE,
+      x:xF, y:yF, z:zF, text:tF,
       type:'scatter3d', mode:'markers',
-      marker: {color:vals, colorscale:'Viridis', size:3, opacity:0.8,
+      marker: {color:cF, colorscale:'Viridis', size:3, opacity:0.8,
                cmin:rng[0], cmax:rng[1],
                colorbar:{title:col,titleside:'right'}},
       hovertemplate: '%{text}<br>'+xKey+':%{x:.3f}<br>'+yKey+':%{y:.3f}<br>'+zKey+':%{z:.3f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
@@ -862,6 +906,7 @@ function updatePCAPanel2() {
     (S[col]||[]).forEach(function(v){ if(v!=null && !seen[v]){seen[v]=1;cats.push(v);} });
     cats.sort();
     var traces = [];
+    // Violin+box traces (top subplot)
     selPCs.forEach(function(pc, pi) {
       cats.forEach(function(cat) {
         var vals = [];
@@ -869,40 +914,88 @@ function updatePCAPanel2() {
           if (S[col][i] === cat) vals.push(S[pc][i]);
         }
         traces.push({
-          y:vals, type:'box', name:cat,
+          y:vals, type:'violin', name:cat,
           x:vals.map(function(){return pc;}),
           marker:{color:pal[cat]||'#888'},
+          box:{visible:true}, meanline:{visible:true}, scalemode:'count',
           legendgroup:cat, showlegend:pi===0,
+          xaxis:'x', yaxis:'y',
         });
       });
     });
-    document.getElementById('pca-panel2-title').textContent = col + ' × PC Distributions';
+    // Proportion bar traces (bottom subplot)
+    var totalN = S.SAMPLE.length;
+    cats.forEach(function(cat) {
+      var n = 0;
+      for (var i=0; i<S.SAMPLE.length; i++) if (S[col][i]===cat) n++;
+      traces.push({
+        x:[100*n/totalN], y:[col], type:'bar', orientation:'h',
+        name:cat, marker:{color:pal[cat]||'#888'},
+        legendgroup:cat, showlegend:false,
+        xaxis:'x2', yaxis:'y2',
+        hovertemplate:cat+': '+n+' samples (<b>%{x:.1f}%</b>)<extra></extra>',
+      });
+    });
+    document.getElementById('pca-panel2-title').textContent = col + ' — Distributions & Proportions';
     Plotly.react('pca-panel2', traces, {
-      ...LAYOUT_BASE, boxmode:'group',
-      xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component'},
-      yaxis:{...LAYOUT_BASE.yaxis, title:'PC Score'},
+      ...LAYOUT_BASE, violinmode:'group', barmode:'stack',
+      xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Principal Component'},
+      yaxis:{domain:[0.38,1], ...LAYOUT_BASE.yaxis, title:'PC Score'},
+      xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'% of samples', range:[0,100]},
+      yaxis2:{domain:[0,0.3], ...LAYOUT_BASE.yaxis},
       legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+      margin:{t:15,r:20,b:50,l:80},
     }, CFG);
   } else {
     var metric = S[col] || [];
+    var rng = pcaSlider.getRange();
+    // Split metric values into in-range vs excluded
+    var inVals=[], outVals=[];
+    for (var i=0; i<metric.length; i++) {
+      if (metric[i]==null || !isFinite(metric[i])) continue;
+      if (metric[i]>=rng[0] && metric[i]<=rng[1]) inVals.push(metric[i]);
+      else outVals.push(metric[i]);
+    }
     var pearsonVals = PCA_PCS.map(function(pc){return pearsonCorr(S[pc], metric);});
     var spearmanVals = PCA_PCS.map(function(pc){return spearmanCorr(S[pc], metric);});
-    document.getElementById('pca-panel2-title').textContent = col + ' × PC Correlation';
-    Plotly.react('pca-panel2', [{
+    var distTraces = [];
+    if (inVals.length > 0) {
+      distTraces.push({
+        y:inVals, type:'violin', name:'In range', x0:'In range',
+        marker:{color:'#6366f1'}, box:{visible:true}, meanline:{visible:true},
+        xaxis:'x', yaxis:'y',
+      });
+    }
+    if (outVals.length > 0) {
+      distTraces.push({
+        y:outVals, type:'violin', name:'Excluded', x0:'Excluded',
+        marker:{color:'#94a3b8'}, box:{visible:true}, meanline:{visible:true},
+        xaxis:'x', yaxis:'y',
+      });
+    }
+    distTraces.push({
       x:PCA_PCS, y:pearsonVals, type:'bar', name:'Pearson r',
       marker:{color:'#6366f1'},
       hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
-    },{
+      xaxis:'x2', yaxis:'y2',
+    });
+    distTraces.push({
       x:PCA_PCS, y:spearmanVals, type:'bar', name:'Spearman \u03c1',
       marker:{color:'#f59e0b'},
       hovertemplate:'%{x}: \u03c1 = %{y:.4f}<extra>Spearman</extra>',
-    }], {
+      xaxis:'x2', yaxis:'y2',
+    });
+    document.getElementById('pca-panel2-title').textContent = col + ' — Distribution & PC Correlation';
+    Plotly.react('pca-panel2', distTraces, {
       ...LAYOUT_BASE, barmode:'group',
-      xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component'},
-      yaxis:{...LAYOUT_BASE.yaxis, title:'Correlation'},
+      xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:col},
+      yaxis:{domain:[0.42,1], ...LAYOUT_BASE.yaxis, title:'Value'},
+      xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Principal Component'},
+      yaxis2:{domain:[0,0.35], ...LAYOUT_BASE.yaxis, title:'Correlation'},
       shapes:[{type:'line', x0:-0.5, x1:PCA_PCS.length-0.5, y0:0, y1:0,
-               line:{color:'#94a3b8', width:1, dash:'dot'}}],
-      legend:{bgcolor:'rgba(0,0,0,0)'},
+               xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}}],
+      legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+      margin:{t:15,r:20,b:50,l:60},
     }, CFG);
   }
 }
@@ -927,6 +1020,7 @@ function plotUmap() {
 
   if (cType === 'cat') {
     umapSlider.hide();
+    hideFilterInfo('umap');
     var pal = CAT_PALS[col] || {};
     var groups = {};
     for (var i=0; i<DATA.umap1.length; i++) {
@@ -960,10 +1054,21 @@ function plotUmap() {
       umapSlider.show(dMin, dMax); umapSlider._inited = true; umapSlider._col = col;
     }
     var rng = umapSlider.getRange();
+    // Filter to points within the slider range
+    var u1F=[], u2F=[], tF2=[], cF2=[], totalValidU=0;
+    for (var i=0; i<DATA.umap1.length; i++) {
+      if (vals[i]==null || !isFinite(vals[i])) continue;
+      totalValidU++;
+      if (vals[i] >= rng[0] && vals[i] <= rng[1]) {
+        u1F.push(DATA.umap1[i]); u2F.push(DATA.umap2[i]);
+        tF2.push(ids[i]); cF2.push(vals[i]);
+      }
+    }
+    updateFilterInfo('umap', totalValidU, u1F.length);
     Plotly.react('umap-plot', [{
-      x:DATA.umap1, y:DATA.umap2, text:ids,
+      x:u1F, y:u2F, text:tF2,
       type:'scattergl', mode:'markers',
-      marker:{color:vals, colorscale:'Viridis', size:5, opacity:0.8,
+      marker:{color:cF2, colorscale:'Viridis', size:5, opacity:0.8,
               cmin:rng[0], cmax:rng[1],
               colorbar:{title:col,titleside:'right'}},
       hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
@@ -992,6 +1097,7 @@ function updateUmapPanel2() {
     (S[col]||[]).forEach(function(v){ if(v!=null && !seen[v]){seen[v]=1;cats.push(v);} });
     cats.sort();
     var traces = [];
+    // Violin+box traces (top subplot)
     dims.forEach(function(dim, di) {
       cats.forEach(function(cat) {
         var vals = [];
@@ -999,40 +1105,87 @@ function updateUmapPanel2() {
           if (S[col][i] === cat) vals.push(dimData[di][i]);
         }
         traces.push({
-          y:vals, type:'box', name:cat,
+          y:vals, type:'violin', name:cat,
           x:vals.map(function(){return dim;}),
           marker:{color:pal[cat]||'#888'},
+          box:{visible:true}, meanline:{visible:true}, scalemode:'count',
           legendgroup:cat, showlegend:di===0,
+          xaxis:'x', yaxis:'y',
         });
       });
     });
-    document.getElementById('umap-panel2-title').textContent = col + ' × UMAP Distributions';
+    // Proportion bar (bottom subplot)
+    var totalN = S.SAMPLE.length;
+    cats.forEach(function(cat) {
+      var n = 0;
+      for (var i=0; i<S.SAMPLE.length; i++) if (S[col][i]===cat) n++;
+      traces.push({
+        x:[100*n/totalN], y:[col], type:'bar', orientation:'h',
+        name:cat, marker:{color:pal[cat]||'#888'},
+        legendgroup:cat, showlegend:false,
+        xaxis:'x2', yaxis:'y2',
+        hovertemplate:cat+': '+n+' samples (<b>%{x:.1f}%</b>)<extra></extra>',
+      });
+    });
+    document.getElementById('umap-panel2-title').textContent = col + ' — Distributions & Proportions';
     Plotly.react('umap-panel2', traces, {
-      ...LAYOUT_BASE, boxmode:'group',
-      xaxis:{...LAYOUT_BASE.xaxis, title:'UMAP Dimension'},
-      yaxis:{...LAYOUT_BASE.yaxis, title:'Coordinate'},
+      ...LAYOUT_BASE, violinmode:'group', barmode:'stack',
+      xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'UMAP Dimension'},
+      yaxis:{domain:[0.38,1], ...LAYOUT_BASE.yaxis, title:'Coordinate'},
+      xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'% of samples', range:[0,100]},
+      yaxis2:{domain:[0,0.3], ...LAYOUT_BASE.yaxis},
       legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+      margin:{t:15,r:20,b:50,l:80},
     }, CFG);
   } else {
     var metric = S[col] || [];
+    var rng = umapSlider.getRange();
+    var inValsU=[], outValsU=[];
+    for (var i=0; i<metric.length; i++) {
+      if (metric[i]==null || !isFinite(metric[i])) continue;
+      if (metric[i]>=rng[0] && metric[i]<=rng[1]) inValsU.push(metric[i]);
+      else outValsU.push(metric[i]);
+    }
     var pVals = dims.map(function(_,di){return pearsonCorr(dimData[di], metric);});
     var sVals = dims.map(function(_,di){return spearmanCorr(dimData[di], metric);});
-    document.getElementById('umap-panel2-title').textContent = col + ' × UMAP Correlation';
-    Plotly.react('umap-panel2', [{
+    var distTracesU = [];
+    if (inValsU.length > 0) {
+      distTracesU.push({
+        y:inValsU, type:'violin', name:'In range', x0:'In range',
+        marker:{color:'#6366f1'}, box:{visible:true}, meanline:{visible:true},
+        xaxis:'x', yaxis:'y',
+      });
+    }
+    if (outValsU.length > 0) {
+      distTracesU.push({
+        y:outValsU, type:'violin', name:'Excluded', x0:'Excluded',
+        marker:{color:'#94a3b8'}, box:{visible:true}, meanline:{visible:true},
+        xaxis:'x', yaxis:'y',
+      });
+    }
+    distTracesU.push({
       x:dims, y:pVals, type:'bar', name:'Pearson r',
       marker:{color:'#6366f1'},
       hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
-    },{
+      xaxis:'x2', yaxis:'y2',
+    });
+    distTracesU.push({
       x:dims, y:sVals, type:'bar', name:'Spearman \u03c1',
       marker:{color:'#f59e0b'},
       hovertemplate:'%{x}: \u03c1 = %{y:.4f}<extra>Spearman</extra>',
-    }], {
+      xaxis:'x2', yaxis:'y2',
+    });
+    document.getElementById('umap-panel2-title').textContent = col + ' — Distribution & UMAP Correlation';
+    Plotly.react('umap-panel2', distTracesU, {
       ...LAYOUT_BASE, barmode:'group',
-      xaxis:{...LAYOUT_BASE.xaxis, title:'Dimension'},
-      yaxis:{...LAYOUT_BASE.yaxis, title:'Correlation'},
+      xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:col},
+      yaxis:{domain:[0.42,1], ...LAYOUT_BASE.yaxis, title:'Value'},
+      xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Dimension'},
+      yaxis2:{domain:[0,0.35], ...LAYOUT_BASE.yaxis, title:'Correlation'},
       shapes:[{type:'line', x0:-0.5, x1:1.5, y0:0, y1:0,
-               line:{color:'#94a3b8', width:1, dash:'dot'}}],
-      legend:{bgcolor:'rgba(0,0,0,0)'},
+               xref:'x2', yref:'y2', line:{color:'#94a3b8', width:1, dash:'dot'}}],
+      legend:{bgcolor:'rgba(0,0,0,0)', font:{size:10}},
+      margin:{t:15,r:20,b:50,l:60},
     }, CFG);
   }
 }
