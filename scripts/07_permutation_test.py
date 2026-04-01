@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
-from utils import eta_squared, marchenko_pastur_pc_count_from_data_dir
+from utils import eta_squared, r_squared, marchenko_pastur_pc_count_from_data_dir
 
 
 # ------------------------------------------------------------------
@@ -60,6 +60,38 @@ def _permutation_null(
         shuffled_series[:] = rng.permutation(labels_arr)
         for j in range(n_pcs):
             null_matrix[i, j] = eta_squared(shuffled_series, values[:, j])
+    return null_matrix
+
+
+def _compute_observed_r2(
+    df: pd.DataFrame,
+    pc_cols: list[str],
+    variable: str,
+) -> np.ndarray:
+    """Return observed Pearson r² for a continuous *variable* on each PC."""
+    valid = df[variable].notna()
+    cov_vals = df.loc[valid, variable].values
+    values = df.loc[valid, pc_cols].values
+    return np.array([r_squared(cov_vals, values[:, i]) for i in range(len(pc_cols))])
+
+
+def _permutation_null_continuous(
+    df: pd.DataFrame,
+    pc_cols: list[str],
+    variable: str,
+    n_permutations: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return (n_permutations × n_pcs) matrix of permuted r² values."""
+    valid = df[variable].notna()
+    cov_arr = df.loc[valid, variable].values.copy()
+    values = df.loc[valid, pc_cols].values
+    n_pcs = len(pc_cols)
+    null_matrix = np.empty((n_permutations, n_pcs))
+    for i in range(n_permutations):
+        permuted = rng.permutation(cov_arr)
+        for j in range(n_pcs):
+            null_matrix[i, j] = r_squared(permuted, values[:, j])
     return null_matrix
 
 
@@ -136,6 +168,38 @@ def permutation_test(
             records.append({
                 "Variable": var,
                 "PC": pc,
+                "metric": "eta2",
+                "observed_eta2": observed[k],
+                "mean_null_eta2": null_mat[:, k].mean(),
+                "p_value": pvals[k],
+                "n_permutations": n_permutations,
+            })
+
+    # ---- Continuous coverage variables: Pearson r² ----------------
+    cov_variables = ["MAD_COV", "IQR_COV", "MEDIAN_BIN_COV"]
+    cov_labels = {
+        "MAD_COV": "Coverage MAD",
+        "IQR_COV": "Coverage IQR",
+        "MEDIAN_BIN_COV": "Median Coverage",
+    }
+    for var in cov_variables:
+        if var not in df.columns:
+            print(f"[07] Skipping {var} (not in data)")
+            continue
+        if df[var].notna().sum() < 10:
+            print(f"[07] Skipping {var} (too few non-null values)")
+            continue
+        print(f"[07] Permutation test for {var} / r² ({n_permutations} permutations) …")
+        observed = _compute_observed_r2(df, pc_cols, var)
+        null_mat = _permutation_null_continuous(df, pc_cols, var, n_permutations, rng)
+        pvals = _empirical_pvalues(observed, null_mat)
+        null_matrices[var] = null_mat
+
+        for k, pc in enumerate(pc_cols):
+            records.append({
+                "Variable": var,
+                "PC": pc,
+                "metric": "r2",
                 "observed_eta2": observed[k],
                 "mean_null_eta2": null_mat[:, k].mean(),
                 "p_value": pvals[k],

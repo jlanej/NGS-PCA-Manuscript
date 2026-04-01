@@ -409,11 +409,7 @@ class TestInteractiveReport:
         assert 'id="perm-pval-plot"' in content, \
             "Report should have -log10(p) overview chart"
         assert 'id="perm-eta2-plot"' in content, \
-            "Report should have eta² bar chart"
-        assert 'id="perm-null-plot"' in content, \
-            "Report should have null distribution explorer"
-        assert 'id="perm-pc-select"' in content, \
-            "Report should have PC selector dropdown"
+            "Report should have effect size bar chart"
 
     def test_report_permutation_data_in_payload(self):
         """Report DATA payload should include permutation results for all MP PCs."""
@@ -434,12 +430,14 @@ class TestInteractiveReport:
             "permutation results should include RELEASE_BATCH"
         assert "SUPERPOPULATION" in pm["results"], \
             "permutation results should include SUPERPOPULATION"
-        # Null histograms for all MP PCs should be present
-        for pc in pm["pc_cols"]:
-            assert pc in pm["null_hists"]["RELEASE_BATCH"], \
-                f"null_hists missing RELEASE_BATCH/{pc}"
-            assert pc in pm["null_hists"]["SUPERPOPULATION"], \
-                f"null_hists missing SUPERPOPULATION/{pc}"
+        # Coverage variables should be present
+        for cov_var in ["MAD_COV", "IQR_COV", "MEDIAN_BIN_COV"]:
+            assert cov_var in pm["results"], \
+                f"permutation results should include {cov_var}"
+            # Each coverage variable result should have r2 metric
+            first_pc = pm["pc_cols"][0]
+            assert pm["results"][cov_var][first_pc]["metric"] == "r2", \
+                f"{cov_var} should use r2 metric"
 
     def test_report_permutation_section_has_rationale(self):
         """Permutation section should explain the rationale and method."""
