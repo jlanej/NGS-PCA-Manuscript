@@ -33,6 +33,18 @@ def eta_squared(categorical: pd.Series, continuous: np.ndarray) -> float:
     return ss_between / ss_total
 
 
+def r_squared(x: np.ndarray, y: np.ndarray) -> float:
+    """Compute Pearson r² between two continuous arrays, ignoring NaNs.
+
+    Returns NaN if fewer than two valid paired observations are available.
+    """
+    mask = ~(np.isnan(x) | np.isnan(y))
+    if mask.sum() < 2:
+        return np.nan
+    corr = np.corrcoef(x[mask], y[mask])[0, 1]
+    return float(corr ** 2)
+
+
 def _count_rows(path: str) -> int:
     """Count data rows in a tab-separated file with a header."""
     with open(path, encoding="utf-8") as fh:

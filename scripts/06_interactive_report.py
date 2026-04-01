@@ -27,7 +27,7 @@ import pandas as pd
 import umap as umap_module
 
 sys.path.insert(0, os.path.dirname(__file__))
-from utils import eta_squared, marchenko_pastur_pc_count_from_data_dir
+from utils import eta_squared, r_squared, marchenko_pastur_pc_count_from_data_dir
 
 
 # ---------------------------------------------------------------------------
@@ -527,11 +527,9 @@ def _compute_permutation_for_report(
     n_permutations: int = 500,
     seed: int = 42,
 ):
-    """Load permutation results from TSV and compute null-distribution histograms.
+    """Load permutation results from TSV and build per-variable result dicts.
 
-    Generates null histograms for all MP-selected PCs (not just top N) so the
-    HTML report can offer a full PC selector.  Returns None if
-    permutation_eta2_results.tsv has not been generated yet.
+    Returns None if permutation_eta2_results.tsv has not been generated yet.
     """
     results_path = os.path.join(output_dir, "permutation_eta2_results.tsv")
     if not os.path.isfile(results_path):
@@ -539,41 +537,33 @@ def _compute_permutation_for_report(
 
     results = pd.read_csv(results_path, sep="\t")
     pc_cols = sorted(results["PC"].unique().tolist(), key=lambda p: int(p[2:]))
-    variables = ["RELEASE_BATCH", "SUPERPOPULATION"]
 
-    # Compute compact null distributions for ALL MP-selected PCs
-    df = df.copy()
-    df["RELEASE_BATCH"] = df["RELEASE_BATCH"].astype(str)
-    rng = np.random.default_rng(seed)
-    null_hists: dict = {}
+    cat_variables = ["RELEASE_BATCH", "SUPERPOPULATION"]
+    cov_variables = ["MAD_COV", "IQR_COV", "MEDIAN_BIN_COV"]
+    cov_labels = {
+        "MAD_COV": "Coverage MAD",
+        "IQR_COV": "Coverage IQR",
+        "MEDIAN_BIN_COV": "Median Coverage",
+    }
 
-    for var in variables:
-        null_hists[var] = {}
-        valid = df[var].notna()
-        labels_arr = df.loc[valid, var].values.copy()
-        values_matrix = df.loc[valid, pc_cols].values
-        shuffled_series = pd.Series(labels_arr.copy())
-        null_mat = np.empty((n_permutations, len(pc_cols)))
-        for i in range(n_permutations):
-            shuffled_series[:] = rng.permutation(labels_arr)
-            for j in range(len(pc_cols)):
-                null_mat[i, j] = eta_squared(shuffled_series, values_matrix[:, j])
-        for j, pc in enumerate(pc_cols):
-            counts, edges = np.histogram(null_mat[:, j], bins=40)
-            null_hists[var][pc] = {
-                "counts": counts.tolist(),
-                "bin_edges": [float(e) for e in edges.tolist()],
-            }
+    # Determine which coverage variables are actually in the TSV
+    present_cov = [v for v in cov_variables if v in results["Variable"].values]
+
+    all_variables = cat_variables + present_cov
 
     # Build per-PC results keyed by variable
     results_by_var: dict = {}
-    for var in variables:
+    for var in all_variables:
         sub = results[results["Variable"] == var]
+        if sub.empty:
+            continue
+        metric = sub["metric"].iloc[0] if "metric" in sub.columns else "eta2"
         results_by_var[var] = {
             row["PC"]: {
                 "observed_eta2": float(row["observed_eta2"]),
                 "mean_null_eta2": float(row["mean_null_eta2"]),
                 "p_value": float(row["p_value"]),
+                "metric": metric,
             }
             for _, row in sub.iterrows()
         }
@@ -581,7 +571,7 @@ def _compute_permutation_for_report(
     return {
         "pc_cols": pc_cols,
         "results": results_by_var,
-        "null_hists": null_hists,
+        "cov_labels": cov_labels,
         "n_permutations_full": int(results["n_permutations"].iloc[0]),
     }
 
@@ -1185,21 +1175,22 @@ def _build_html(
         </p>
         <h3>Method</h3>
         <p>
-          For each of the <em>k</em> Marchenko–Pastur-selected PCs and each grouping
-          variable (RELEASE_BATCH, SUPERPOPULATION):
+          For each of the <em>k</em> Marchenko–Pastur-selected PCs and each variable
+          (RELEASE_BATCH, SUPERPOPULATION, Coverage MAD, Coverage IQR, Median Coverage):
         </p>
         <ol>
-          <li><strong>Observed η²</strong> — computed with the true labels using a
-              one-way ANOVA decomposition:
-              η² = SS<sub>between</sub> / SS<sub>total</sub>.</li>
-          <li><strong>Null distribution</strong> — the variable's labels are randomly
-              shuffled across all samples and η² is recomputed.  This is repeated
-              <em>N</em> times (see Results below).  Each shuffle preserves group sizes
-              by construction (<code>np.random.permutation</code>) but destroys any
-              real association.</li>
+          <li><strong>Observed effect size</strong> — η² for categorical variables
+              (RELEASE_BATCH, SUPERPOPULATION) computed via one-way ANOVA decomposition:
+              η² = SS<sub>between</sub> / SS<sub>total</sub>.  Pearson r² for continuous
+              coverage metrics.</li>
+          <li><strong>Null distribution</strong> — the variable's values are randomly
+              shuffled across all samples and the effect size is recomputed.  This is
+              repeated <em>N</em> times (see Results below).  Each shuffle preserves
+              marginal distributions by construction (<code>np.random.permutation</code>)
+              but destroys any real association.</li>
           <li><strong>Empirical p-value</strong> (Phipson &amp; Smyth, 2010 conservative
               correction):
-              <code>p = (# permutations where η²<sub>perm</sub> ≥ η²<sub>obs</sub> + 1)
+              <code>p = (# permutations where effect<sub>perm</sub> ≥ effect<sub>obs</sub> + 1)
               / (N + 1)</code>.
               The +1 in numerator and denominator prevents p = 0 and is conservative.</li>
         </ol>
@@ -1225,25 +1216,10 @@ def _build_html(
       <!-- Effect size bar chart with sig annotations -->
       <div class="plot-card" style="margin-top:1rem">
         <div class="plot-card-header">
-          <h3>Observed η² with Significance Annotations</h3>
+          <h3>Observed Effect Size with Significance Annotations</h3>
         </div>
         <div class="plot-card-body">
           <div id="perm-eta2-plot" style="height:380px"></div>
-        </div>
-      </div>
-
-      <!-- Null distribution explorer (PC selector) -->
-      <div class="plot-card" style="margin-top:1rem">
-        <div class="plot-card-header">
-          <h3>Null Distribution Explorer</h3>
-          <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
-            <label style="font-size:0.85rem;font-weight:600">Select PC:
-              <select id="perm-pc-select" style="margin-left:0.4rem;font-size:0.85rem;padding:0.2rem 0.4rem;border:1px solid var(--border);border-radius:4px;background:var(--surface)"></select>
-            </label>
-          </div>
-        </div>
-        <div class="plot-card-body">
-          <div id="perm-null-plot" style="height:360px"></div>
         </div>
       </div>
     </div>
@@ -2116,9 +2092,27 @@ def _build_html(
       }
 
       var pcs = pm.pc_cols;
-      var vars = ['RELEASE_BATCH', 'SUPERPOPULATION'];
-      var varLabels = {'RELEASE_BATCH': 'Batch', 'SUPERPOPULATION': 'Ancestry'};
-      var varColors = {'RELEASE_BATCH': '#D95F02', 'SUPERPOPULATION': '#1B9E77'};
+      /* All tested variables: categorical (η²) and continuous coverage (r²) */
+      var catVars = ['RELEASE_BATCH', 'SUPERPOPULATION'];
+      var covVars = ['MAD_COV', 'IQR_COV', 'MEDIAN_BIN_COV'].filter(function(v) {
+        return pm.results && pm.results[v];
+      });
+      var vars = catVars.concat(covVars);
+      var covLabelsMap = pm.cov_labels || {};
+      var varLabels = {
+        'RELEASE_BATCH': 'Batch (\u03b7\u00b2)',
+        'SUPERPOPULATION': 'Ancestry (\u03b7\u00b2)',
+        'MAD_COV': (covLabelsMap['MAD_COV'] || 'Coverage MAD') + ' (r\u00b2)',
+        'IQR_COV': (covLabelsMap['IQR_COV'] || 'Coverage IQR') + ' (r\u00b2)',
+        'MEDIAN_BIN_COV': (covLabelsMap['MEDIAN_BIN_COV'] || 'Median Coverage') + ' (r\u00b2)',
+      };
+      var varColors = {
+        'RELEASE_BATCH': '#D95F02',
+        'SUPERPOPULATION': '#1B9E77',
+        'MAD_COV': '#7570B3',
+        'IQR_COV': '#E7298A',
+        'MEDIAN_BIN_COV': '#66A61E',
+      };
       var nPerm = pm.n_permutations_full;
 
       /* Helper: sig label */
@@ -2130,32 +2124,36 @@ def _build_html(
       }
 
       /* Summary paragraph */
-      var batchSig = 0, ancSig = 0;
-      pcs.forEach(function(pc) {
-        if (pm.results['RELEASE_BATCH'][pc] && pm.results['RELEASE_BATCH'][pc].p_value < 0.05) batchSig++;
-        if (pm.results['SUPERPOPULATION'][pc] && pm.results['SUPERPOPULATION'][pc].p_value < 0.05) ancSig++;
+      var sigCounts = {};
+      vars.forEach(function(v) {
+        sigCounts[v] = 0;
+        pcs.forEach(function(pc) {
+          if (pm.results[v] && pm.results[v][pc] && pm.results[v][pc].p_value < 0.05) sigCounts[v]++;
+        });
+      });
+      var summaryParts = vars.map(function(v) {
+        return varLabels[v] + ': <strong>' + sigCounts[v] + '/' + pcs.length + '</strong> PCs significant';
       });
       document.getElementById('permutation-summary').innerHTML =
         'Permutation test with <strong>' + nPerm + '</strong> permutations across '
         + '<strong>' + pcs.length + '</strong> Marchenko\u2013Pastur-selected PCs. '
-        + 'RELEASE_BATCH is significant (p\u2009&lt;\u20090.05) on '
-        + '<strong>' + batchSig + '/' + pcs.length + '</strong> PCs; '
-        + 'SUPERPOPULATION is significant on '
-        + '<strong>' + ancSig + '/' + pcs.length + '</strong> PCs. '
+        + summaryParts.join(' &middot; ') + '. '
         + 'Significance thresholds: *** p\u2009&lt;\u20090.001 &middot; '
         + '** p\u2009&lt;\u20090.01 &middot; * p\u2009&lt;\u20090.05 &middot; ns p\u2009\u22650.05.';
 
       /* ---- Chart 1: -log10(p) Manhattan-style overview ---- */
       var pvalTraces = vars.map(function(v) {
+        if (!pm.results[v]) return null;
         var xs = [], ys = [], hovers = [], symbols = [];
         pcs.forEach(function(pc) {
           var r = pm.results[v][pc];
           if (!r) return;
           var logP = r.p_value > 0 ? -Math.log10(r.p_value) : -Math.log10(1/(nPerm+1));
+          var metricLabel = r.metric === 'r2' ? 'r\u00b2' : '\u03b7\u00b2';
           xs.push(pc);
           ys.push(logP);
           hovers.push(varLabels[v] + '<br>' + pc
-            + '<br>\u03b7\u00b2 = ' + r.observed_eta2.toFixed(4)
+            + '<br>' + metricLabel + ' = ' + r.observed_eta2.toFixed(4)
             + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(3) : r.p_value.toFixed(4))
             + '<br>' + sigLabel(r.p_value));
           symbols.push(r.p_value < 0.05 ? 'circle' : 'circle-open');
@@ -2167,7 +2165,7 @@ def _build_html(
           marker: {color: varColors[v], size: 8, symbol: symbols},
           hovertext: hovers, hoverinfo: 'text',
         };
-      });
+      }).filter(Boolean);
       /* threshold lines */
       var pvalShapes = [
         {type:'line', x0:-0.5, x1:pcs.length-0.5, y0:-Math.log10(0.05), y1:-Math.log10(0.05),
@@ -2195,17 +2193,19 @@ def _build_html(
         margin: {...LAYOUT_BASE.margin, b:80},
       }, CFG);
 
-      /* ---- Chart 2: Grouped η² bar chart with sig annotations ---- */
-      var eta2Traces = vars.map(function(v, vi) {
+      /* ---- Chart 2: Grouped effect-size bar chart with sig annotations ---- */
+      var effTraces = vars.map(function(v) {
+        if (!pm.results[v]) return null;
         var xs = [], ys = [], hovers = [];
+        var metricLabel = (pm.results[v][pcs[0]] || {}).metric === 'r2' ? 'r\u00b2' : '\u03b7\u00b2';
         pcs.forEach(function(pc) {
           var r = pm.results[v][pc];
           if (!r) { xs.push(pc); ys.push(0); hovers.push(pc); return; }
           xs.push(pc);
           ys.push(r.observed_eta2);
           hovers.push(varLabels[v] + '<br>' + pc
-            + '<br>\u03b7\u00b2 = ' + r.observed_eta2.toFixed(4)
-            + '<br>mean null \u03b7\u00b2 = ' + r.mean_null_eta2.toFixed(4)
+            + '<br>' + metricLabel + ' = ' + r.observed_eta2.toFixed(4)
+            + '<br>mean null ' + metricLabel + ' = ' + r.mean_null_eta2.toFixed(4)
             + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(3) : r.p_value.toFixed(4))
             + ' ' + sigLabel(r.p_value));
         });
@@ -2214,23 +2214,25 @@ def _build_html(
           marker: {color: varColors[v]},
           hovertext: hovers, hoverinfo: 'text',
         };
-      });
+      }).filter(Boolean);
       /* sig star annotations above bars */
-      var eta2Annotations = [];
+      var effAnnotations = [];
       var yMaxAll = 0;
       vars.forEach(function(v) {
+        if (!pm.results[v]) return;
         pcs.forEach(function(pc) {
           var r = pm.results[v][pc];
           if (r && r.observed_eta2 > yMaxAll) yMaxAll = r.observed_eta2;
         });
       });
       var starOffset = yMaxAll * 0.04;
-      pcs.forEach(function(pc, xi) {
+      pcs.forEach(function(pc) {
         vars.forEach(function(v) {
+          if (!pm.results[v]) return;
           var r = pm.results[v][pc];
           if (!r) return;
           var lbl = sigLabel(r.p_value);
-          eta2Annotations.push({
+          effAnnotations.push({
             x: pc, y: r.observed_eta2 + starOffset,
             xref: 'x', yref: 'y',
             text: lbl,
@@ -2239,86 +2241,15 @@ def _build_html(
           });
         });
       });
-      Plotly.newPlot('perm-eta2-plot', eta2Traces, {
+      Plotly.newPlot('perm-eta2-plot', effTraces, {
         ...LAYOUT_BASE,
         barmode: 'group',
         xaxis: {...LAYOUT_BASE.xaxis, title:'Principal Component', tickangle:-45},
-        yaxis: {...LAYOUT_BASE.yaxis, title:'\u03b7\u00b2 (Effect Size)'},
-        annotations: eta2Annotations,
+        yaxis: {...LAYOUT_BASE.yaxis, title:'Effect Size (\u03b7\u00b2 or r\u00b2)'},
+        annotations: effAnnotations,
         legend: {x:0.01, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
         margin: {...LAYOUT_BASE.margin, b:80},
       }, CFG);
-
-      /* ---- Chart 3: Null distribution explorer (PC selector) ---- */
-      var pcSel = document.getElementById('perm-pc-select');
-      pcs.forEach(function(pc) {
-        var opt = document.createElement('option');
-        opt.value = pc; opt.textContent = pc;
-        pcSel.appendChild(opt);
-      });
-
-      function plotNullDist(pc) {
-        var traces = vars.map(function(v) {
-          var h = pm.null_hists && pm.null_hists[v] && pm.null_hists[v][pc];
-          var r = pm.results[v][pc];
-          if (!h || !r) return null;
-          var edges = h.bin_edges;
-          var counts = h.counts;
-          /* Build bar trace from histogram bins */
-          var xMid = [], widths = [];
-          for (var i = 0; i < counts.length; i++) {
-            xMid.push((edges[i] + edges[i+1]) / 2);
-            widths.push(edges[i+1] - edges[i]);
-          }
-          return {
-            x: xMid, y: counts, type: 'bar', name: varLabels[v] + ' null',
-            width: widths,
-            marker: {color: varColors[v], opacity: 0.5},
-            hovertemplate: '\u03b7\u00b2 \u2248 %{x:.4f}<br>count: %{y}<extra>' + varLabels[v] + ' null</extra>',
-          };
-        }).filter(Boolean);
-
-        /* Observed value vertical lines as shapes */
-        var shapes = [], obsAnnotations = [];
-        vars.forEach(function(v) {
-          var r = pm.results[v][pc];
-          if (!r) return;
-          var pTxt = r.p_value < 0.001 ? r.p_value.toExponential(2) : r.p_value.toFixed(4);
-          shapes.push({
-            type: 'line',
-            x0: r.observed_eta2, x1: r.observed_eta2, y0: 0, y1: 1,
-            xref: 'x', yref: 'paper',
-            line: {color: varColors[v], width: 2, dash: 'solid'},
-          });
-          obsAnnotations.push({
-            x: r.observed_eta2, y: 0.97, xref: 'x', yref: 'paper',
-            xanchor: 'left', yanchor: 'top',
-            text: varLabels[v] + '<br>obs=' + r.observed_eta2.toFixed(4)
-              + '<br>p=' + pTxt + ' ' + sigLabel(r.p_value),
-            showarrow: true, arrowhead: 2, arrowsize: 0.8,
-            ax: 20, ay: -25,
-            font: {size: 10, color: varColors[v]},
-            bgcolor: 'rgba(255,255,255,0.85)',
-            bordercolor: varColors[v], borderwidth: 1, borderpad: 3,
-          });
-        });
-
-        Plotly.react('perm-null-plot', traces, {
-          ...LAYOUT_BASE,
-          barmode: 'overlay',
-          xaxis: {...LAYOUT_BASE.xaxis, title:'\u03b7\u00b2 (permuted)'},
-          yaxis: {...LAYOUT_BASE.yaxis, title:'Count'},
-          shapes: shapes,
-          annotations: obsAnnotations,
-          legend: {x:0.7, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
-          title: {text: pc + ' \u2014 Null Distributions', font:{size:13}, x:0.5},
-          margin: {...LAYOUT_BASE.margin, t:45},
-        }, CFG);
-      }
-
-      plotNullDist(pcs[0]);
-      pcSel.addEventListener('change', function() { plotNullDist(pcSel.value); });
-    })();
 
     /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
