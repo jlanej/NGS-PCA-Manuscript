@@ -425,7 +425,7 @@ class TestScientificValidation:
 # ---------------------------------------------------------------------------
 class TestRelatednessDistance:
     def test_relatedness_data_in_report_payload(self):
-        """Report DATA JSON should include relatedness_distance with expected keys."""
+        """Report DATA JSON should include relatedness_distance with directed pair semantics."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
@@ -444,6 +444,10 @@ class TestRelatednessDistance:
         assert rd["n_pairs"] > 0, "Should have at least one relative pair"
         assert len(rd["d_relative_values"]) == rd["n_pairs"]
         assert len(rd["d_nonrelative_values"]) == rd["n_pairs"]
+        assert rd["n_pairs"] == rd["n_parent_child"] + rd["n_sibling"], \
+            "n_pairs should equal directed parent-child + directed sibling counts"
+        assert rd["n_pairs"] % 2 == 0, \
+            "Counts are directed (i,j and j,i); expected an even number"
 
     def test_relatedness_wilcoxon_p_is_valid(self):
         """Wilcoxon p-value should be a finite number in [0, 1]."""
