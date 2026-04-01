@@ -371,6 +371,167 @@ def _compute_variance_partitioning(df: pd.DataFrame, n_pcs: int = 20):
     return records
 
 
+def _compute_relatedness_distance(
+    df: pd.DataFrame,
+    data_dir: str,
+    mp_cutoff_pcs: int,
+):
+    """Compute pedigree-based relatedness distances in NGS-PCA space.
+
+    For every pair of first-degree relatives (parent–child and siblings)
+    present in both the pedigree and the NGS-PCA data, compute the Euclidean
+    distance between them in the top *k* PCs (Marchenko–Pastur selected) and
+    compare to the nearest non-relative from the same population and batch.
+
+    Returns a dict with the comparison table, Wilcoxon test results, and
+    summary counts.
+    """
+    from scipy.stats import wilcoxon
+    from scipy.spatial.distance import cdist
+    from collections import defaultdict
+
+    ped_path = os.path.join(data_dir, "ped",
+                            "integrated_call_samples_v3.20200731.ALL.ped")
+    if not os.path.isfile(ped_path):
+        return None
+
+    ped = pd.read_csv(ped_path, sep="\t")
+    ngs_samples = set(df["SAMPLE"].values)
+
+    # --- Identify first-degree relative pairs --------------------------------
+    pc_cols = [f"PC{i}" for i in range(1, mp_cutoff_pcs + 1)]
+    pc_cols = [c for c in pc_cols if c in df.columns]
+    if len(pc_cols) < 2:
+        return None
+
+    # Build a set of all first-degree relatives per individual
+    first_degree: dict[str, set[str]] = defaultdict(set)
+    pair_type: dict[tuple[str, str], str] = {}
+
+    # Parent-child from Paternal/Maternal ID columns
+    for _, row in ped.iterrows():
+        child = row["Individual ID"]
+        father = row["Paternal ID"]
+        mother = row["Maternal ID"]
+        if child not in ngs_samples:
+            continue
+        if father != "0" and father in ngs_samples:
+            first_degree[child].add(father)
+            first_degree[father].add(child)
+            pair_type[tuple(sorted([child, father]))] = "parent-child"
+        if mother != "0" and mother in ngs_samples:
+            first_degree[child].add(mother)
+            first_degree[mother].add(child)
+            pair_type[tuple(sorted([child, mother]))] = "parent-child"
+
+    # Siblings: children sharing a family ID
+    children_rows = ped[(ped["Paternal ID"] != "0") | (ped["Maternal ID"] != "0")]
+    fam_children: dict[str, list[str]] = defaultdict(list)
+    for _, row in children_rows.iterrows():
+        iid = row["Individual ID"]
+        if iid in ngs_samples:
+            fam_children[row["Family ID"]].append(iid)
+    for fam, members in fam_children.items():
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                first_degree[a].add(b)
+                first_degree[b].add(a)
+                key = tuple(sorted([a, b]))
+                if key not in pair_type:
+                    pair_type[key] = "sibling"
+
+    if not pair_type:
+        return None
+
+    # --- Precompute per-(batch, population) PC matrices ----------------------
+    df_idx = df.set_index("SAMPLE")
+    pc_matrix = df_idx[pc_cols].values  # (n_samples, k)
+    sample_list = df_idx.index.values   # aligned with pc_matrix rows
+    sample_to_idx = {s: i for i, s in enumerate(sample_list)}
+
+    group_indices: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, s in enumerate(sample_list):
+        batch = str(df_idx.loc[s, "RELEASE_BATCH"])
+        pop = str(df_idx.loc[s, "POPULATION"])
+        group_indices[(batch, pop)].append(i)
+
+    # --- Compute distances ---------------------------------------------------
+    records = []
+    seen = set()
+    for (a, b), rtype in pair_type.items():
+        if a not in sample_to_idx or b not in sample_to_idx:
+            continue
+        for i_sample, j_sample in [(a, b), (b, a)]:
+            if (i_sample, j_sample) in seen:
+                continue
+            seen.add((i_sample, j_sample))
+
+            idx_i = sample_to_idx[i_sample]
+            idx_j = sample_to_idx[j_sample]
+            vec_i = pc_matrix[idx_i]
+            vec_j = pc_matrix[idx_j]
+            d_ij = float(np.sqrt(np.sum((vec_i - vec_j) ** 2)))
+
+            # Nearest non-relative in same batch+population
+            batch_i = str(df_idx.loc[i_sample, "RELEASE_BATCH"])
+            pop_i = str(df_idx.loc[i_sample, "POPULATION"])
+            group = group_indices.get((batch_i, pop_i), [])
+            relatives_of_i = first_degree.get(i_sample, set())
+
+            d_nearest = float("inf")
+            for g_idx in group:
+                g_sample = sample_list[g_idx]
+                if g_sample == i_sample or g_sample in relatives_of_i:
+                    continue
+                d = float(np.sqrt(np.sum((vec_i - pc_matrix[g_idx]) ** 2)))
+                if d < d_nearest:
+                    d_nearest = d
+
+            if d_nearest == float("inf"):
+                continue  # no non-relative in same group
+
+            records.append({
+                "individual": i_sample,
+                "relative": j_sample,
+                "d_relative": d_ij,
+                "d_nearest_nonrelative": d_nearest,
+                "batch": batch_i,
+                "population": pop_i,
+                "relation_type": rtype,
+            })
+
+    if not records:
+        return None
+
+    # --- Statistical test ----------------------------------------------------
+    d_rel = np.array([r["d_relative"] for r in records])
+    d_nrel = np.array([r["d_nearest_nonrelative"] for r in records])
+
+    n_pairs = len(records)
+    n_parent_child = sum(1 for r in records if r["relation_type"] == "parent-child")
+    n_sibling = sum(1 for r in records if r["relation_type"] == "sibling")
+
+    try:
+        stat, p_value = wilcoxon(d_rel, d_nrel, alternative="two-sided")
+        stat = float(stat)
+        p_value = float(p_value)
+    except Exception:
+        stat, p_value = None, None
+
+    return {
+        "pairs": records,
+        "n_pairs": n_pairs,
+        "n_parent_child": n_parent_child,
+        "n_sibling": n_sibling,
+        "wilcoxon_stat": stat,
+        "wilcoxon_p": p_value,
+        "mp_pcs_used": len(pc_cols),
+        "d_relative_values": d_rel.tolist(),
+        "d_nonrelative_values": d_nrel.tolist(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
@@ -391,6 +552,7 @@ def _build_html(
     n_samples,
     n_populations,
     n_superpops,
+    relatedness_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -422,6 +584,7 @@ def _build_html(
         "n_samples": n_samples,
         "n_populations": n_populations,
         "n_superpops": n_superpops,
+        "relatedness_distance": relatedness_results,
     }))
 
     html = textwrap.dedent("""\
@@ -726,6 +889,7 @@ def _build_html(
       <a href="#section-pca">PCA Scatter</a>
       <a href="#section-umap">UMAP</a>
       <a href="#section-confounding">Confounding</a>
+      <a href="#section-relatedness">Relatedness</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
 
@@ -890,6 +1054,53 @@ def _build_html(
         under-represented.
       </p>
       <div id="confounding-cards"></div>
+    </div>
+
+    <!-- Relatedness Distance -->
+    <div class="report-section" id="section-relatedness">
+      <h2>Pedigree-based Relatedness Distance</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          A key validation for NGS-PCA is that it captures <strong>technical</strong> rather than
+          <strong>biological (familial)</strong> variation. In genotype-based PCA, closely related
+          individuals (parent–child, siblings) cluster tightly because they share large fractions of
+          their genome. If NGS-PCA instead captures coverage-level technical variation, the distance
+          between relatives in PC space should be comparable to the distance between unrelated
+          individuals from the same population and sequencing batch.
+        </p>
+        <h3>Method</h3>
+        <p>
+          We parse the 1000 Genomes pedigree file to identify all first-degree relative pairs
+          (parent–child from Paternal/Maternal ID columns, and siblings sharing a family ID) that
+          are both present in the NGS-PCA dataset. For each directed pair (<em>i</em>, <em>j</em>):
+        </p>
+        <ul>
+          <li>Compute the Euclidean distance <em>d(i, j)</em> in the top <em>k</em> PCs selected
+              by the Marchenko–Pastur cutoff.</li>
+          <li>Compute the minimum Euclidean distance from <em>i</em> to any non-relative in the
+              same population and batch: <em>d(i, nearest non-relative)</em>.</li>
+        </ul>
+        <p>
+          A paired <strong>Wilcoxon signed-rank test</strong> compares the two distance distributions.
+          Under the null hypothesis that NGS-PCA does not recapitulate familial relatedness, the distances
+          between relatives should not be systematically smaller than those to the nearest unrelated
+          neighbour. Failure to reject (large <em>p</em>-value) supports the interpretation that
+          NGS-PCA primarily reflects technical rather than biological signal.
+        </p>
+        <h3>Results</h3>
+        <p id="relatedness-summary"></p>
+      </div>
+      <div class="grid-2">
+        <div class="plot-card">
+          <div class="plot-card-header"><h3>Related vs. Nearest Unrelated Distance</h3></div>
+          <div class="plot-card-body"><div id="relatedness-violin" style="height:500px"></div></div>
+        </div>
+        <div class="plot-card">
+          <div class="plot-card-header"><h3>Paired Comparison (dot plot)</h3></div>
+          <div class="plot-card-body"><div id="relatedness-paired" style="height:500px"></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- Heatmap -->
@@ -1614,6 +1825,134 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  RELATEDNESS DISTANCE                                               */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var rd = DATA.relatedness_distance;
+      if (!rd || !rd.d_relative_values || rd.d_relative_values.length === 0) {
+        document.getElementById('relatedness-summary').textContent =
+          'No first-degree relative pairs found in both the pedigree and NGS-PCA data.';
+        return;
+      }
+
+      /* Summary text */
+      var pTxt = rd.wilcoxon_p != null
+        ? (rd.wilcoxon_p < 0.001 ? rd.wilcoxon_p.toExponential(3) : rd.wilcoxon_p.toFixed(4))
+        : 'N/A';
+      var statTxt = rd.wilcoxon_stat != null ? rd.wilcoxon_stat.toFixed(1) : 'N/A';
+      var sigTxt = rd.wilcoxon_p != null
+        ? (rd.wilcoxon_p < 0.001 ? ' (***)'
+           : rd.wilcoxon_p < 0.01 ? ' (**)'
+           : rd.wilcoxon_p < 0.05 ? ' (*)'
+           : ' (n.s.)')
+        : '';
+      /* Compute direction: are relatives closer or farther? */
+      var sumDiff = 0;
+      for (var k = 0; k < rd.d_relative_values.length; k++) {
+        sumDiff += rd.d_relative_values[k] - rd.d_nonrelative_values[k];
+      }
+      var relFarther = sumDiff > 0;
+
+      document.getElementById('relatedness-summary').innerHTML =
+        '<strong>' + rd.n_pairs + '</strong> directed relative pairs analysed '
+        + '(' + rd.n_parent_child + ' parent\u2013child, ' + rd.n_sibling + ' sibling) '
+        + 'using the top <strong>' + rd.mp_pcs_used + '</strong> Marchenko\u2013Pastur-selected PCs. '
+        + 'Paired Wilcoxon signed-rank test: <em>W</em>\u2009=\u2009' + statTxt
+        + ', <em>p</em>\u2009=\u2009' + pTxt + sigTxt + '. '
+        + (rd.wilcoxon_p != null && rd.wilcoxon_p >= 0.05
+           ? 'The test does <strong>not</strong> reject the null hypothesis \u2014 distances between '
+             + 'relatives are not systematically different from those to the nearest unrelated neighbour, '
+             + 'consistent with NGS-PCA capturing technical rather than familial variation.'
+           : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && relFarther
+             ? 'The test is significant, but relatives are on average <strong>farther</strong> apart '
+               + 'than the nearest unrelated neighbour in the same batch and population. '
+               + 'This is consistent with NGS-PCA capturing technical rather than familial variation: '
+               + 'genotype PCA would pull relatives <em>closer</em>, whereas NGS-PCA shows no such clustering.'
+           : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && !relFarther
+             ? 'The test is significant and relatives are on average <strong>closer</strong>, '
+               + 'suggesting some residual familial signal may be present in the NGS-PCA space.'
+           : '');
+
+      /* Violin / box plot */
+      var traceRel = {
+        y: rd.d_relative_values,
+        type: 'violin', name: 'Related',
+        box: {visible: true},
+        meanline: {visible: true},
+        marker: {color: '#E41A1C'},
+        fillcolor: 'rgba(228,26,28,0.3)',
+        line: {color: '#E41A1C'},
+        scalemode: 'count',
+        side: 'positive',
+        points: 'all',
+        jitter: 0.4,
+        pointpos: -0.5,
+        marker: {color: '#E41A1C', size: 3, opacity: 0.5},
+      };
+      var traceNrel = {
+        y: rd.d_nonrelative_values,
+        type: 'violin', name: 'Nearest unrelated',
+        box: {visible: true},
+        meanline: {visible: true},
+        marker: {color: '#377EB8'},
+        fillcolor: 'rgba(55,126,184,0.3)',
+        line: {color: '#377EB8'},
+        scalemode: 'count',
+        side: 'positive',
+        points: 'all',
+        jitter: 0.4,
+        pointpos: -0.5,
+        marker: {color: '#377EB8', size: 3, opacity: 0.5},
+      };
+      Plotly.newPlot('relatedness-violin', [traceRel, traceNrel], {
+        ...LAYOUT_BASE,
+        yaxis: {...LAYOUT_BASE.yaxis, title: 'Euclidean distance (top ' + rd.mp_pcs_used + ' PCs)'},
+        showlegend: true,
+        legend: {x: 0.7, y: 1},
+        annotations: [{
+          x: 0.5, y: 1.08, xref: 'paper', yref: 'paper', showarrow: false,
+          text: '<i>p</i> = ' + pTxt + sigTxt,
+          font: {size: 13}
+        }],
+      }, CFG);
+
+      /* Paired dot plot */
+      var xRel = [], xNrel = [], yRel = [], yNrel = [];
+      var xLine = [], yLine = [];
+      for (var i = 0; i < rd.d_relative_values.length; i++) {
+        xRel.push(0); yRel.push(rd.d_relative_values[i]);
+        xNrel.push(1); yNrel.push(rd.d_nonrelative_values[i]);
+        xLine.push(0, 1, null);
+        yLine.push(rd.d_relative_values[i], rd.d_nonrelative_values[i], null);
+      }
+      var traceLine = {
+        x: xLine, y: yLine, mode: 'lines',
+        line: {color: 'rgba(150,150,150,0.15)', width: 1},
+        showlegend: false, hoverinfo: 'skip',
+      };
+      var traceRelDot = {
+        x: xRel, y: yRel, mode: 'markers', name: 'Related',
+        marker: {color: '#E41A1C', size: 4, opacity: 0.4},
+      };
+      var traceNrelDot = {
+        x: xNrel, y: yNrel, mode: 'markers', name: 'Nearest unrelated',
+        marker: {color: '#377EB8', size: 4, opacity: 0.4},
+      };
+      Plotly.newPlot('relatedness-paired', [traceLine, traceRelDot, traceNrelDot], {
+        ...LAYOUT_BASE,
+        xaxis: {...LAYOUT_BASE.xaxis, tickvals: [0, 1],
+                ticktext: ['Related', 'Nearest unrelated'], range: [-0.5, 1.5]},
+        yaxis: {...LAYOUT_BASE.yaxis, title: 'Euclidean distance (top ' + rd.mp_pcs_used + ' PCs)'},
+        showlegend: false,
+        annotations: [{
+          x: 0.5, y: 1.08, xref: 'paper', yref: 'paper', showarrow: false,
+          text: rd.n_pairs + ' pairs \u2014 <i>p</i> = ' + pTxt + sigTxt,
+          font: {size: 13}
+        }],
+      }, CFG);
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -1722,6 +2061,11 @@ def generate_report(
     print("[06] Computing confounding assessment …")
     confounding_results = _compute_confounding(merged)
 
+    print("[06] Computing relatedness distances …")
+    relatedness_results = _compute_relatedness_distance(
+        merged, data_dir, mp_cutoff_pcs
+    )
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -1730,6 +2074,7 @@ def generate_report(
         assoc_rows, assoc_pcs,
         confounding_results,
         n_samples, n_populations, n_superpops,
+        relatedness_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)
