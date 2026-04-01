@@ -91,12 +91,12 @@ def _count_available_samples(data_dir: str) -> int:
     return len(pcs_samples & qc_samples)
 
 
-def _compute_variance(sv_df: pd.DataFrame, n_pcs: int = 50):
+def _compute_variance(sv_df: pd.DataFrame, n_pcs: int = 0):
     eigenvalues = sv_df["SINGULAR_VALUES"].values ** 2
     total = eigenvalues.sum()
     prop = eigenvalues / total
     cum = np.cumsum(prop)
-    n = min(n_pcs, len(eigenvalues))
+    n = len(eigenvalues) if n_pcs <= 0 else min(n_pcs, len(eigenvalues))
     return prop[:n].tolist(), cum[:n].tolist(), n
 
 
@@ -1849,7 +1849,7 @@ def generate_report(
     data_dir: str,
     output_dir: str,
     report_dir: str,
-    n_pcs_scree: int = 50,
+    n_pcs_scree: int = 0,
     n_pcs_assoc: int = 20,
     n_pcs_umap_max: int = 0,
 ) -> str:
@@ -1934,7 +1934,8 @@ def main() -> None:
                         default=os.environ.get("NGSPCA_OUTPUT_DIR", "output"))
     parser.add_argument("--report-dir", default="docs",
                         help="Directory for the HTML report (default: docs)")
-    parser.add_argument("--n-pcs-scree", type=int, default=50)
+    parser.add_argument("--n-pcs-scree", type=int, default=0,
+                        help="Number of PCs for scree/cumulative plots (0 = all available PCs)")
     parser.add_argument("--n-pcs-assoc", type=int, default=20)
     parser.add_argument("--n-pcs-umap-max", type=int, default=0,
                         help="Optional upper bound for MP-selected UMAP PCs (0 = no cap)")
