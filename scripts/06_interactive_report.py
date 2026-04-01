@@ -387,7 +387,6 @@ def _compute_relatedness_distance(
     summary counts.
     """
     from scipy.stats import wilcoxon
-    from scipy.spatial.distance import cdist
     from collections import defaultdict
 
     ped_path = os.path.join(data_dir, "ped",
@@ -520,7 +519,6 @@ def _compute_relatedness_distance(
         stat, p_value = None, None
 
     return {
-        "pairs": records,
         "n_pairs": n_pairs,
         "n_parent_child": n_parent_child,
         "n_sibling": n_sibling,
