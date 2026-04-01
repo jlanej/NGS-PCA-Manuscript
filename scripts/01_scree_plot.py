@@ -47,7 +47,7 @@ def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 0) -> None:
         ax1.axvline(mp_n_pcs + 0.5, linestyle="--", color="darkorange", linewidth=1.5,
                     label=f"MP cutoff: {mp_n_pcs} PCs")
     ax1.set_xlabel("Principal Component")
-    ax1.set_ylabel("Proportion of Variance Explained")
+    ax1.set_ylabel("Proportion of Variance (Retained PCs)")
     ax1.set_title("Scree Plot")
     ax1.set_xlim(0.5, n_show + 0.5)
     if mp_n_pcs <= n_show:
@@ -63,8 +63,8 @@ def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 0) -> None:
         ax2.axvline(mp_n_pcs, linestyle="--", color="darkorange", linewidth=1.5,
                     label=f"MP cutoff: {mp_n_pcs} PCs")
     ax2.set_xlabel("Number of PCs")
-    ax2.set_ylabel("Cumulative Variance Explained")
-    ax2.set_title("Cumulative Variance Explained")
+    ax2.set_ylabel("Cumulative Variance (Retained PCs)")
+    ax2.set_title("Cumulative Variance (Retained PCs)")
     ax2.legend()
     ax2.set_xlim(0.5, n_show + 0.5)
     ax2.set_ylim(0, 1.05)
