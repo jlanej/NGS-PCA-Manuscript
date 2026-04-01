@@ -17,7 +17,7 @@ import pandas as pd
 from utils import marchenko_pastur_pc_count_from_data_dir
 
 
-def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 50) -> None:
+def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 0) -> None:
     """Create scree plot and cumulative variance explained plot.
 
     Parameters
@@ -27,7 +27,7 @@ def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 50) -> None:
     output_dir : str
         Directory where figure will be written.
     n_pcs : int
-        Number of PCs to display (default 50).
+        Number of PCs to display (default 0 = all available PCs).
     """
     sv = pd.read_csv(os.path.join(data_dir, "ngspca_output", "svd.singularvalues.txt"), sep="\t")
     eigenvalues = sv["SINGULAR_VALUES"].values ** 2
@@ -36,7 +36,7 @@ def scree_plot(data_dir: str, output_dir: str, n_pcs: int = 50) -> None:
     cum_var = np.cumsum(prop_var)
     mp_n_pcs, _ = marchenko_pastur_pc_count_from_data_dir(data_dir, eigenvalues)
 
-    n_show = min(n_pcs, len(eigenvalues))
+    n_show = len(eigenvalues) if n_pcs <= 0 else min(n_pcs, len(eigenvalues))
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -81,7 +81,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Scree / cumulative variance plot")
     parser.add_argument("--data-dir", default=os.environ.get("NGSPCA_DATA_DIR", "1000G"))
     parser.add_argument("--output-dir", default=os.environ.get("NGSPCA_OUTPUT_DIR", "output"))
-    parser.add_argument("--n-pcs", type=int, default=50)
+    parser.add_argument("--n-pcs", type=int, default=0,
+                        help="Number of PCs to plot (0 = all available PCs)")
     args = parser.parse_args()
     scree_plot(args.data_dir, args.output_dir, args.n_pcs)
 
