@@ -115,9 +115,15 @@ def _prepare_scatter_data(df: pd.DataFrame):
     """Return a lightweight dict for the scatter plots (PC1-10 + numerics)."""
     pc_cols = [f"PC{i}" for i in range(1, 11)]
     meta_cols = ["SAMPLE", "SUPERPOPULATION", "RELEASE_BATCH",
-                 "INFERRED_SEX", "POPULATION"]
-    numeric_cols = ["MEAN_AUTOSOMAL_COV", "X_COV_RATIO", "Y_COV_RATIO",
-                    "PCT_MAPPED", "PCT_DUPLICATE", "TOTAL_BASES", "RELATEDNESS"]
+                 "INFERRED_SEX", "POPULATION", "RELATEDNESS", "FAMILY_ROLE"]
+    numeric_cols = [
+        "MEAN_AUTOSOMAL_COV", "X_COV_RATIO", "Y_COV_RATIO",
+        "MITO_COV_RATIO", "MEDIAN_GENOME_COV",
+        "PCT_GENOME_COV_10X", "PCT_GENOME_COV_20X",
+        "SD_COV", "MAD_COV", "IQR_COV", "MEDIAN_BIN_COV",
+        "HQ_MEDIAN_COV", "HQ_SD_COV", "HQ_MAD_COV", "HQ_IQR_COV",
+        "MTDNA_CN",
+    ]
     want = meta_cols + pc_cols + numeric_cols
     have = [c for c in want if c in df.columns]
     sub = df[have].copy()
@@ -126,26 +132,69 @@ def _prepare_scatter_data(df: pd.DataFrame):
 
 
 def _compute_associations(df: pd.DataFrame, n_pcs: int = 20):
-    """Compute η²/r² associations for the heatmap."""
+    """Compute η²/r² associations and p-values for the heatmap.
+
+    Categorical variables use η² (from one-way ANOVA F-test) with the
+    corresponding p-value.  Continuous variables use Pearson r² with the
+    two-sided t-test p-value from ``scipy.stats.pearsonr``.
+
+    η² (eta-squared) is the proportion of variance in a PC score that is
+    explained by the categorical grouping.  It is the natural analogue of
+    R² for categorical predictors and equals SSbetween / SStotal from a
+    one-way ANOVA.  Unlike Cramér's V (which operates on contingency
+    tables of two categorical variables), η² directly measures how much
+    of a *continuous* variable's spread is captured by group membership,
+    making it the appropriate effect-size metric when the outcome (PC
+    score) is numeric and the predictor is categorical.
+    """
     from scipy import stats as sp_stats
 
     pc_cols = [f"PC{i}" for i in range(1, n_pcs + 1)]
     available = [c for c in pc_cols if c in df.columns]
-    cat_vars = ["RELEASE_BATCH", "SUPERPOPULATION", "INFERRED_SEX", "POPULATION"]
-    cont_vars = ["MEAN_AUTOSOMAL_COV"]
+    cat_vars = ["RELEASE_BATCH", "SUPERPOPULATION", "INFERRED_SEX",
+                "POPULATION", "RELATEDNESS"]
+    # Include only categorical vars actually present
+    cat_vars = [v for v in cat_vars if v in df.columns]
+    cont_vars = [
+        "MEAN_AUTOSOMAL_COV", "X_COV_RATIO", "Y_COV_RATIO",
+        "MITO_COV_RATIO", "MEDIAN_GENOME_COV",
+        "PCT_GENOME_COV_10X", "PCT_GENOME_COV_20X",
+        "SD_COV", "MAD_COV", "IQR_COV", "MEDIAN_BIN_COV",
+        "HQ_MEDIAN_COV", "HQ_SD_COV", "HQ_MAD_COV", "HQ_IQR_COV",
+        "MTDNA_CN",
+    ]
+    cont_vars = [v for v in cont_vars if v in df.columns]
     rows = []
     for var in cat_vars:
-        valid = df[var].notna()
-        for pc in available:
-            eta2 = eta_squared(df.loc[valid, var], df.loc[valid, pc].values)
-            rows.append({"Variable": var, "PC": pc, "Value": float(eta2)})
-    for var in cont_vars:
         valid = df[var].notna()
         if valid.sum() < 10:
             continue
         for pc in available:
-            r, _ = sp_stats.pearsonr(df.loc[valid, var], df.loc[valid, pc])
-            rows.append({"Variable": var, "PC": pc, "Value": float(r ** 2)})
+            eta2 = eta_squared(df.loc[valid, var], df.loc[valid, pc].values)
+            # ANOVA F-test for p-value
+            groups = [
+                df.loc[valid & (df[var] == g), pc].values
+                for g in df.loc[valid, var].unique()
+                if len(df.loc[valid & (df[var] == g)]) > 0
+            ]
+            if len(groups) >= 2:
+                f_stat, p_val = sp_stats.f_oneway(*groups)
+                p_val = float(p_val) if np.isfinite(p_val) else 1.0
+            else:
+                p_val = 1.0
+            rows.append({"Variable": var, "PC": pc, "Value": float(eta2),
+                         "Metric": "η²", "p_value": p_val})
+    for var in cont_vars:
+        valid = df[var].notna()
+        if valid.sum() < 10:
+            continue
+        # Skip constant columns (e.g. all-zero metrics)
+        if df.loc[valid, var].nunique() < 2:
+            continue
+        for pc in available:
+            r, p_val = sp_stats.pearsonr(df.loc[valid, var], df.loc[valid, pc])
+            rows.append({"Variable": var, "PC": pc, "Value": float(r ** 2),
+                         "Metric": "r²", "p_value": float(p_val)})
     return rows, [c for c in available]
 
 
@@ -586,6 +635,36 @@ def _build_html(
       padding: 1.25rem;
       margin-bottom: 1.25rem;
     }
+    /* Dual-handle range slider for continuous colour scales */
+    .range-slider-wrap {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .range-slider-wrap.visible { display: flex; flex-wrap: wrap; }
+    .range-slider-wrap input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 130px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      outline: none;
+    }
+    .range-slider-wrap input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%; background: var(--accent);
+      cursor: pointer;
+    }
+    .range-slider-wrap input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px; border:none;
+      border-radius: 50%; background: var(--accent); cursor: pointer;
+    }
+    .range-slider-wrap .range-label { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
     .confound-card h4 { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.5rem; }
     .confound-card .stat-row {
       display: flex;
@@ -739,6 +818,14 @@ def _build_html(
             <label>Color <select id="pca-color"></select></label>
           </div>
         </div>
+        <div class="range-slider-wrap" id="pca-range-wrap">
+          <span class="range-label" id="pca-range-lo-label">0</span>
+          <input type="range" id="pca-range-lo" min="0" max="100" value="0" step="0.1">
+          <span style="color:var(--text);">–</span>
+          <input type="range" id="pca-range-hi" min="0" max="100" value="100" step="0.1">
+          <span class="range-label" id="pca-range-hi-label">100</span>
+          <button id="pca-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
+        </div>
         <div class="plot-card-body"><div id="pca-scatter" style="height:560px"></div></div>
       </div>
       <div class="plot-card">
@@ -762,6 +849,14 @@ def _build_html(
             <div class="controls">
               <label>Color <select id="umap-color"></select></label>
             </div>
+          </div>
+          <div class="range-slider-wrap" id="umap-range-wrap">
+            <span class="range-label" id="umap-range-lo-label">0</span>
+            <input type="range" id="umap-range-lo" min="0" max="100" value="0" step="0.1">
+            <span style="color:var(--text);">–</span>
+            <input type="range" id="umap-range-hi" min="0" max="100" value="100" step="0.1">
+            <span class="range-label" id="umap-range-hi-label">100</span>
+            <button id="umap-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
           </div>
           <div class="plot-card-body"><div id="umap-plot" style="height:560px"></div></div>
         </div>
@@ -813,13 +908,24 @@ def _build_html(
     <div class="report-section" id="section-heatmap">
       <h2>PC × QC Variable Associations</h2>
       <p class="description">
-        Effect sizes (η² for categorical variables, r² for continuous) between each PC and QC variable.
-        High values indicate that a QC variable explains substantial variance in that PC, suggesting
-        that the PC captures variation driven by that variable.
+        Effect sizes between each PC and every available QC variable.
+        <strong>Categorical</strong> variables (batch, population, sex, relatedness) use
+        <strong>η²</strong> (eta-squared) — the proportion of PC-score variance explained by
+        group membership, equivalent to SS<sub>between</sub> / SS<sub>total</sub> from a
+        one-way ANOVA.  η² is the natural R²-analogue for a categorical predictor on a
+        continuous outcome and is therefore the appropriate metric here: it directly answers
+        "how much of this PC's spread does the grouping capture?".  Cramér's V, by contrast,
+        measures association between two <em>categorical</em> variables and would require
+        discretising the PC scores, losing information.
+        <strong>Continuous</strong> variables (coverage metrics) use Pearson <strong>r²</strong>.
+        P-values from the corresponding ANOVA F-test (categorical) or Pearson t-test
+        (continuous) are shown on hover.  High values indicate that a QC variable explains
+        substantial variance in that PC, suggesting the PC captures variation driven by that
+        variable.
       </p>
       <div class="plot-card">
         <div class="plot-card-header"><h3>Association Heatmap (η² / r²)</h3></div>
-        <div class="plot-card-body"><div id="heatmap-plot" style="height:400px"></div></div>
+        <div class="plot-card-body"><div id="heatmap-plot" style="height:600px"></div></div>
       </div>
     </div>
 
@@ -872,19 +978,9 @@ def _build_html(
           <table class="summary-table" id="tbl-batch"></table>
         </div>
       </div>
-      <div class="grid-2" style="margin-top:0.5rem;">
-        <div>
-          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Sex</h3>
-          <table class="summary-table" id="tbl-sex"></table>
-        </div>
-        <div>
-          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Top PCs by Variance Explained</h3>
-          <table class="summary-table" id="tbl-toppc"></table>
-        </div>
-      </div>
       <div style="margin-top:0.5rem;">
-        <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Population</h3>
-        <table class="summary-table" id="tbl-pop"></table>
+        <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Sex</h3>
+        <table class="summary-table" id="tbl-sex"></table>
       </div>
     </div>
 
@@ -963,7 +1059,9 @@ def _build_html(
       const sel = document.getElementById(id);
       const catGroup = document.createElement('optgroup');
       catGroup.label = 'Categorical';
-      [{v:'SUPERPOPULATION',t:'Superpopulation'},{v:'RELEASE_BATCH',t:'Batch'},{v:'INFERRED_SEX',t:'Sex'}]
+      [{v:'SUPERPOPULATION',t:'Superpopulation'},{v:'RELEASE_BATCH',t:'Batch'},{v:'INFERRED_SEX',t:'Sex'},
+       {v:'POPULATION',t:'Population'},{v:'RELATEDNESS',t:'Relatedness'}]
+        .filter(function(item) { return DATA.scatter[item.v]; })
         .forEach(function(item) {
           var o = document.createElement('option');
           o.value = 'cat:' + item.v; o.textContent = item.t;
@@ -980,6 +1078,48 @@ def _build_html(
         });
         sel.appendChild(numGroup);
       }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  HELPER: dual-handle range slider for continuous colour scales      */
+    /* ------------------------------------------------------------------ */
+    function initRangeSlider(prefix, plotFn) {
+      var lo = document.getElementById(prefix + '-range-lo');
+      var hi = document.getElementById(prefix + '-range-hi');
+      var loLabel = document.getElementById(prefix + '-range-lo-label');
+      var hiLabel = document.getElementById(prefix + '-range-hi-label');
+      var wrap = document.getElementById(prefix + '-range-wrap');
+      var resetBtn = document.getElementById(prefix + '-range-reset');
+      var state = {dataMin:0, dataMax:1, lo:0, hi:1};
+
+      function update(fromSlider) {
+        var loVal = parseFloat(lo.value);
+        var hiVal = parseFloat(hi.value);
+        if (loVal > hiVal) { if (fromSlider === 'lo') hi.value = lo.value; else lo.value = hi.value; }
+        loVal = parseFloat(lo.value); hiVal = parseFloat(hi.value);
+        var range = state.dataMax - state.dataMin;
+        state.lo = state.dataMin + (loVal / 100) * range;
+        state.hi = state.dataMin + (hiVal / 100) * range;
+        loLabel.textContent = state.lo.toPrecision(4);
+        hiLabel.textContent = state.hi.toPrecision(4);
+        plotFn();
+      }
+      lo.addEventListener('input', function() { update('lo'); });
+      hi.addEventListener('input', function() { update('hi'); });
+      resetBtn.addEventListener('click', function() { lo.value = 0; hi.value = 100; update('lo'); });
+
+      return {
+        show: function(dataMin, dataMax) {
+          state.dataMin = dataMin; state.dataMax = dataMax;
+          lo.value = 0; hi.value = 100;
+          state.lo = dataMin; state.hi = dataMax;
+          loLabel.textContent = dataMin.toPrecision(4);
+          hiLabel.textContent = dataMax.toPrecision(4);
+          wrap.classList.add('visible');
+        },
+        hide: function() { wrap.classList.remove('visible'); },
+        getRange: function() { return [state.lo, state.hi]; }
+      };
     }
 
     /* ------------------------------------------------------------------ */
@@ -1084,6 +1224,7 @@ def _build_html(
     populateSelect('pca-y', PCA_PCS, 'PC2');
     populateSelect('pca-z', PCA_PCS, 'PC3');
     populateColorSelect('pca-color');
+    var pcaSlider = initRangeSlider('pca', plotPCA);
 
     function plotPCA() {
       var xKey = document.getElementById('pca-x').value;
@@ -1095,6 +1236,7 @@ def _build_html(
       var S = DATA.scatter;
 
       if (cType === 'cat') {
+        pcaSlider.hide();
         var pal = CAT_PALS[col] || {};
         var groups = {};
         for (var i=0; i<S.SAMPLE.length; i++) {
@@ -1118,10 +1260,18 @@ def _build_html(
         }, CFG);
       } else {
         var vals = S[col] || [];
+        var finite = vals.filter(function(v){return v!=null && isFinite(v);});
+        var dMin = finite.length ? Math.min.apply(null, finite) : 0;
+        var dMax = finite.length ? Math.max.apply(null, finite) : 1;
+        if (!pcaSlider._inited || pcaSlider._col !== col) {
+          pcaSlider.show(dMin, dMax); pcaSlider._inited = true; pcaSlider._col = col;
+        }
+        var rng = pcaSlider.getRange();
         Plotly.react('pca-scatter', [{
           x:S[xKey], y:S[yKey], z:S[zKey], text:S.SAMPLE,
           type:'scatter3d', mode:'markers',
           marker: {color:vals, colorscale:'Viridis', size:3, opacity:0.8,
+                   cmin:rng[0], cmax:rng[1],
                    colorbar:{title:col,titleside:'right'}},
           hovertemplate: '%{text}<br>'+xKey+':%{x:.3f}<br>'+yKey+':%{y:.3f}<br>'+zKey+':%{z:.3f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
         }], {
@@ -1194,7 +1344,8 @@ def _build_html(
       }
     }
 
-    ['pca-x','pca-y','pca-z','pca-color'].forEach(function(id){
+    document.getElementById('pca-color').addEventListener('change', function() { pcaSlider._inited = false; plotPCA(); });
+    ['pca-x','pca-y','pca-z'].forEach(function(id){
       document.getElementById(id).addEventListener('change', plotPCA);
     });
     plotPCA();
@@ -1203,6 +1354,7 @@ def _build_html(
     /*  UMAP (2D) + PANEL 2                                               */
     /* ------------------------------------------------------------------ */
     populateColorSelect('umap-color');
+    var umapSlider = initRangeSlider('umap', plotUmap);
 
     function plotUmap() {
       var colorVal = document.getElementById('umap-color').value;
@@ -1211,6 +1363,7 @@ def _build_html(
       var S = DATA.scatter, ids = S['SAMPLE'];
 
       if (cType === 'cat') {
+        umapSlider.hide();
         var pal = CAT_PALS[col] || {};
         var groups = {};
         for (var i=0; i<DATA.umap1.length; i++) {
@@ -1237,10 +1390,18 @@ def _build_html(
         }, CFG);
       } else {
         var vals = S[col] || [];
+        var finite = vals.filter(function(v){return v!=null && isFinite(v);});
+        var dMin = finite.length ? Math.min.apply(null, finite) : 0;
+        var dMax = finite.length ? Math.max.apply(null, finite) : 1;
+        if (!umapSlider._inited || umapSlider._col !== col) {
+          umapSlider.show(dMin, dMax); umapSlider._inited = true; umapSlider._col = col;
+        }
+        var rng = umapSlider.getRange();
         Plotly.react('umap-plot', [{
           x:DATA.umap1, y:DATA.umap2, text:ids,
           type:'scattergl', mode:'markers',
           marker:{color:vals, colorscale:'Viridis', size:5, opacity:0.8,
+                  cmin:rng[0], cmax:rng[1],
                   colorbar:{title:col,titleside:'right'}},
           hovertemplate:'%{text}<br>UMAP-1:%{x:.2f}<br>UMAP-2:%{y:.2f}<br>'+col+':%{marker.color:.3f}<extra></extra>',
         }], {
@@ -1314,7 +1475,7 @@ def _build_html(
     }
 
     document.getElementById('umap-title').textContent = 'UMAP (' + DATA.n_umap_pcs + ' PCs, MP)';
-    document.getElementById('umap-color').addEventListener('change', plotUmap);
+    document.getElementById('umap-color').addEventListener('change', function() { umapSlider._inited = false; plotUmap(); });
     plotUmap();
 
     /* ------------------------------------------------------------------ */
@@ -1417,7 +1578,18 @@ def _build_html(
         })
       );
       const hovertext = variables.map((v, vi) =>
-        pcs.map((pc, pi) => v + ' \\u00d7 ' + pc + '<br>Effect size: ' + (z[vi][pi] != null ? z[vi][pi].toFixed(4) : 'N/A'))
+        pcs.map((pc, pi) => {
+          const r = DATA.assoc_rows.find(a => a.Variable === v && a.PC === pc);
+          const val = r ? r.Value : 0;
+          const metric = r && r.Metric ? r.Metric : '';
+          const pVal = r && r.p_value != null
+            ? (r.p_value < 0.001 ? r.p_value.toExponential(2)
+               : r.p_value < 0.01 ? r.p_value.toFixed(4)
+               : r.p_value.toFixed(3))
+            : 'N/A';
+          const sigStr = r && r.p_value != null && r.p_value < 0.05 ? ' *' : '';
+          return v + ' \\u00d7 ' + pc + '<br>' + metric + ' = ' + val.toFixed(4) + '<br><i>p</i> = ' + pVal + sigStr;
+        })
       );
       Plotly.newPlot('heatmap-plot', [{
         z: z, x: pcs, y: variables, type: 'heatmap',
@@ -1532,19 +1704,6 @@ def _build_html(
       buildCountTable('tbl-superpop', DATA.sample_summary.superpop_counts, 'Superpopulation');
       buildCountTable('tbl-batch', DATA.sample_summary.batch_counts, 'Batch');
       buildCountTable('tbl-sex', DATA.sample_summary.sex_counts, 'Sex');
-      buildCountTable('tbl-pop', DATA.sample_summary.pop_counts, 'Population');
-
-      /* top PCs table */
-      const tpc = document.getElementById('tbl-toppc');
-      let html = '<thead><tr><th>PC</th><th class="num">Variance (%)</th><th class="num">Cumulative (%)</th></tr></thead><tbody>';
-      const topN = Math.min(10, DATA.variance_prop.length);
-      for (let i = 0; i < topN; i++) {
-        html += '<tr><td>PC' + (i + 1) + '</td>';
-        html += '<td class="num">' + (DATA.variance_prop[i] * 100).toFixed(2) + '%</td>';
-        html += '<td class="num">' + (DATA.variance_cum[i] * 100).toFixed(1) + '%</td></tr>';
-      }
-      html += '</tbody>';
-      tpc.innerHTML = html;
     })();
 
     </script>

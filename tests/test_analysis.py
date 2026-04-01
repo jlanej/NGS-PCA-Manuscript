@@ -273,6 +273,52 @@ class TestInteractiveReport:
         assert "umap-panel2" in content, "Report should have UMAP panel 2 div"
         assert "umap-color" in content, "Report should have UMAP colour selector"
 
+    def test_report_has_expanded_qc_metrics(self):
+        """Report should include expanded coverage QC metrics for color-coding."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        for metric in ["MEAN_AUTOSOMAL_COV", "SD_COV", "MAD_COV", "IQR_COV",
+                        "MEDIAN_BIN_COV", "MITO_COV_RATIO"]:
+            assert metric in content, f"Report should include QC metric {metric}"
+
+    def test_report_has_range_slider(self):
+        """Report should have dual-handle range sliders for continuous colour scales."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "pca-range-lo" in content, "Report should have PCA range slider low handle"
+        assert "pca-range-hi" in content, "Report should have PCA range slider high handle"
+        assert "umap-range-lo" in content, "Report should have UMAP range slider low handle"
+        assert "umap-range-hi" in content, "Report should have UMAP range slider high handle"
+        assert "range-slider-wrap" in content, "Report should have range slider wrapper CSS"
+        assert "initRangeSlider" in content, "Report should have range slider init function"
+
+    def test_report_heatmap_has_pvalues(self):
+        """Association heatmap should include p-values in data payload."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "p_value" in content, "Heatmap should include p_value data"
+        assert '"Metric"' in content, "Heatmap should include metric type labels"
+
+    def test_report_dropped_tables(self):
+        """'Top PCs by Variance Explained' and 'Samples per Population' tables should be removed."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "tbl-toppc" not in content, "Report should not have Top PCs table"
+        assert "tbl-pop" not in content, "Report should not have Population table"
+
+    def test_report_heatmap_description_explains_eta_squared(self):
+        """Heatmap description should explain why eta-squared is used."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "SS<sub>between</sub>" in content or "SS_between" in content, \
+            "Report should explain eta-squared formula"
+        assert "ANOVA" in content, "Report should mention ANOVA"
+
 
 class TestCiConfiguration:
     def test_ci_subset_is_1000(self):
