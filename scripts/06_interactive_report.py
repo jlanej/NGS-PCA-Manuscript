@@ -387,12 +387,7 @@ def _build_html(
     n_umap_pcs,
     assoc_rows,
     assoc_pcs,
-    batch_records,
-    batch_pcs,
     confounding_results,
-    sex_pc_records,
-    sample_summary,
-    variance_partitioning,
     n_samples,
     n_populations,
     n_superpops,
@@ -423,12 +418,7 @@ def _build_html(
         "n_umap_pcs": n_umap_pcs,
         "assoc_rows": assoc_rows,
         "assoc_pcs": assoc_pcs,
-        "batch_records": batch_records,
-        "batch_pcs": batch_pcs,
         "confounding": confounding_results,
-        "sex_pc": sex_pc_records,
-        "sample_summary": sample_summary,
-        "variance_partitioning": variance_partitioning,
         "n_samples": n_samples,
         "n_populations": n_populations,
         "n_superpops": n_superpops,
@@ -736,11 +726,7 @@ def _build_html(
       <a href="#section-pca">PCA Scatter</a>
       <a href="#section-umap">UMAP</a>
       <a href="#section-confounding">Confounding</a>
-      <a href="#section-partitioning">Variance Partitioning</a>
       <a href="#section-heatmap">PC–QC Associations</a>
-      <a href="#section-sex">Sex × PC</a>
-      <a href="#section-batch">Batch vs Ancestry</a>
-      <a href="#section-summary">Summary</a>
     </nav>
 
     <!-- Introduction -->
@@ -827,30 +813,32 @@ def _build_html(
         distributions by group; when a continuous metric is selected, it shows Pearson and
         Spearman correlation bar charts (computed at runtime).
       </p>
-      <div class="plot-card">
-        <div class="plot-card-header">
-          <h3>PCA 3D Scatter</h3>
-          <div class="controls">
-            <label>X <select id="pca-x"></select></label>
-            <label>Y <select id="pca-y"></select></label>
-            <label>Z <select id="pca-z"></select></label>
-            <label>Color <select id="pca-color"></select></label>
+      <div class="grid-2">
+        <div class="plot-card">
+          <div class="plot-card-header">
+            <h3>PCA 3D Scatter</h3>
+            <div class="controls">
+              <label>X <select id="pca-x"></select></label>
+              <label>Y <select id="pca-y"></select></label>
+              <label>Z <select id="pca-z"></select></label>
+              <label>Color <select id="pca-color"></select></label>
+            </div>
           </div>
+          <div class="range-slider-wrap" id="pca-range-wrap">
+            <span class="range-label" id="pca-range-lo-label">0</span>
+            <input type="range" id="pca-range-lo" min="0" max="100" value="0" step="0.1">
+            <span style="color:var(--text);">–</span>
+            <input type="range" id="pca-range-hi" min="0" max="100" value="100" step="0.1">
+            <span class="range-label" id="pca-range-hi-label">100</span>
+            <button id="pca-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
+          </div>
+          <div class="filter-info" id="pca-filter-info"></div>
+          <div class="plot-card-body"><div id="pca-scatter" style="height:560px"></div></div>
         </div>
-        <div class="range-slider-wrap" id="pca-range-wrap">
-          <span class="range-label" id="pca-range-lo-label">0</span>
-          <input type="range" id="pca-range-lo" min="0" max="100" value="0" step="0.1">
-          <span style="color:var(--text);">–</span>
-          <input type="range" id="pca-range-hi" min="0" max="100" value="100" step="0.1">
-          <span class="range-label" id="pca-range-hi-label">100</span>
-          <button id="pca-range-reset" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Reset</button>
+        <div class="plot-card">
+          <div class="plot-card-header"><h3 id="pca-panel2-title">Distribution</h3></div>
+          <div class="plot-card-body"><div id="pca-panel2" style="height:560px"></div></div>
         </div>
-        <div class="filter-info" id="pca-filter-info"></div>
-        <div class="plot-card-body"><div id="pca-scatter" style="height:560px"></div></div>
-      </div>
-      <div class="plot-card">
-        <div class="plot-card-header"><h3 id="pca-panel2-title">Distribution</h3></div>
-        <div class="plot-card-body"><div id="pca-panel2" style="height:560px"></div></div>
       </div>
     </div>
 
@@ -904,27 +892,6 @@ def _build_html(
       <div id="confounding-cards"></div>
     </div>
 
-    <!-- Variance Partitioning -->
-    <div class="report-section" id="section-partitioning">
-      <h2>Variance Partitioning: Disentangling Batch and Ancestry</h2>
-      <p class="description">
-        To assess whether batch PCs are erroneously capturing ancestry — or whether ancestry
-        is simply confounded with batch — we decompose each PC's variance into four components
-        using an inclusion/exclusion R² approach.
-        <strong>Unique Batch</strong> = variance explained only by batch (not by ancestry);
-        <strong>Unique Ancestry</strong> = variance explained only by ancestry (not by batch);
-        <strong>Shared (Confounded)</strong> = variance attributable to either factor due to
-        their correlation;
-        <strong>Residual</strong> = variance explained by neither.
-        Large "Shared" bars indicate PCs where batch and ancestry effects are inseparable.
-      </p>
-      <div class="plot-card">
-        <div class="plot-card-header"><h3>R² Variance Partitioning per PC</h3></div>
-        <div class="plot-card-body"><div id="partitioning-bar" style="height:460px"></div></div>
-      </div>
-      <div id="partitioning-table-container"></div>
-    </div>
-
     <!-- Heatmap -->
     <div class="report-section" id="section-heatmap">
       <h2>PC × QC Variable Associations</h2>
@@ -947,61 +914,6 @@ def _build_html(
       <div class="plot-card">
         <div class="plot-card-header"><h3>Association Heatmap (η² / r²)</h3></div>
         <div class="plot-card-body"><div id="heatmap-plot" style="height:600px"></div></div>
-      </div>
-    </div>
-
-    <!-- Sex × PC -->
-    <div class="report-section" id="section-sex">
-      <h2>Sex Association Across Principal Components</h2>
-      <p class="description">
-        Biological sex can correlate with principal components through genuine chromosomal
-        differences or through sequencing artefacts (e.g., coverage variation on sex chromosomes).
-        We quantify the association using three complementary metrics: η² (ANOVA-based), the
-        point-biserial correlation coefficient <em>r</em> (signed, so direction matters), and the
-        Kruskal–Wallis <em>H</em>-test (non-parametric rank-based test).
-      </p>
-      <div class="plot-card">
-        <div class="plot-card-header"><h3>Point-Biserial <em>r</em>: Sex × PC</h3></div>
-        <div class="plot-card-body"><div id="sex-pc-bar" style="height:400px"></div></div>
-      </div>
-      <div id="sex-pc-table-container"></div>
-    </div>
-
-    <!-- Batch vs Ancestry -->
-    <div class="report-section" id="section-batch">
-      <h2>Batch vs Ancestry Effect Sizes</h2>
-      <p class="description">
-        Compares η² (eta-squared) effect sizes of sequencing batch and continental ancestry
-        on each PC. Because NGS-PCA PCs capture coverage-level technical variation, batch effects
-        are expected to dominate the leading components. Large ancestry η² on the same PCs may
-        indicate that batches are non-randomly distributed across populations, warranting further
-        investigation.
-      </p>
-      <div class="plot-card">
-        <div class="plot-card-header"><h3>η² per Principal Component</h3></div>
-        <div class="plot-card-body"><div id="batch-bar" style="height:460px"></div></div>
-      </div>
-    </div>
-
-    <!-- Summary -->
-    <div class="report-section" id="section-summary">
-      <h2>Summary Statistics</h2>
-      <p class="description">
-        Key dataset characteristics and analysis metrics at a glance.
-      </p>
-      <div class="grid-2">
-        <div>
-          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Superpopulation</h3>
-          <table class="summary-table" id="tbl-superpop"></table>
-        </div>
-        <div>
-          <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Batch</h3>
-          <table class="summary-table" id="tbl-batch"></table>
-        </div>
-      </div>
-      <div style="margin-top:0.5rem;">
-        <h3 style="font-size:1rem;margin-bottom:0.75rem;">Samples per Sex</h3>
-        <table class="summary-table" id="tbl-sex"></table>
       </div>
     </div>
 
@@ -1197,6 +1109,39 @@ def _build_html(
 
     function spearmanCorr(x, y) { return pearsonCorr(rankArray(x), rankArray(y)); }
 
+    /* Count valid (non-null, non-NaN) pairs shared by two arrays. */
+    function corrN(x, y) {
+      var cnt = 0;
+      for (var i=0; i<x.length; i++) {
+        if (x[i]!=null && y[i]!=null && !isNaN(x[i]) && !isNaN(y[i])) cnt++;
+      }
+      return cnt;
+    }
+
+    /* Standard-normal CDF using Abramowitz & Stegun rational approximation. */
+    function normalCDF(z) {
+      var t = 1 / (1 + 0.2316419 * Math.abs(z));
+      var d = 0.3989423 * Math.exp(-z * z / 2);
+      var p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
+      return z > 0 ? 1 - p : p;
+    }
+
+    /* Two-sided p-value for a Pearson/Spearman r with n valid pairs,
+       using Fisher's z-transform (accurate for n ≥ 10). */
+    function corrPValue(r, n) {
+      if (n < 4 || Math.abs(r) >= 1) return (Math.abs(r) >= 1 ? 0 : 1);
+      var z = Math.atanh(r) * Math.sqrt(n - 3);
+      return 2 * (1 - normalCDF(Math.abs(z)));
+    }
+
+    /* Return a significance label string for a given p-value. */
+    function sigLabel(p) {
+      if (p < 0.001) return '***';
+      if (p < 0.01)  return '**';
+      if (p < 0.05)  return '*';
+      return '';
+    }
+
     /* ------------------------------------------------------------------ */
     /*  SCREE                                                              */
     /* ------------------------------------------------------------------ */
@@ -1386,8 +1331,11 @@ def _build_html(
         for (var i=0; i<metric.length; i++) {
           if (metric[i]!=null && isFinite(metric[i])) allVals.push(metric[i]);
         }
+        var corrNs = PCA_PCS.map(function(pc){return corrN(S[pc], metric);});
         var pearsonVals = PCA_PCS.map(function(pc){return pearsonCorr(S[pc], metric);});
         var spearmanVals = PCA_PCS.map(function(pc){return spearmanCorr(S[pc], metric);});
+        var pearsonPVals = pearsonVals.map(function(r,i){return corrPValue(r, corrNs[i]);});
+        var spearmanPVals = spearmanVals.map(function(r,i){return corrPValue(r, corrNs[i]);});
         var distTraces = [];
         if (allVals.length > 0) {
           distTraces.push({
@@ -1399,13 +1347,19 @@ def _build_html(
         distTraces.push({
           x:PCA_PCS, y:pearsonVals, type:'bar', name:'Pearson r',
           marker:{color:'#6366f1'},
-          hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
+          text:pearsonPVals.map(function(p){return sigLabel(p);}),
+          textposition:'outside',
+          customdata:pearsonPVals,
+          hovertemplate:'%{x}: r = %{y:.4f}, p = %{customdata:.3e}<extra>Pearson</extra>',
           xaxis:'x2', yaxis:'y2',
         });
         distTraces.push({
           x:PCA_PCS, y:spearmanVals, type:'bar', name:'Spearman \\u03c1',
           marker:{color:'#f59e0b'},
-          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}<extra>Spearman</extra>',
+          text:spearmanPVals.map(function(p){return sigLabel(p);}),
+          textposition:'outside',
+          customdata:spearmanPVals,
+          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}, p = %{customdata:.3e}<extra>Spearman</extra>',
           xaxis:'x2', yaxis:'y2',
         });
         document.getElementById('pca-panel2-title').textContent = col + ' \u2014 Distribution & PC Correlation';
@@ -1563,8 +1517,11 @@ def _build_html(
         for (var i=0; i<metric.length; i++) {
           if (metric[i]!=null && isFinite(metric[i])) allValsU.push(metric[i]);
         }
+        var corrNsU = dims.map(function(_,di){return corrN(dimData[di], metric);});
         var pVals = dims.map(function(_,di){return pearsonCorr(dimData[di], metric);});
         var sVals = dims.map(function(_,di){return spearmanCorr(dimData[di], metric);});
+        var pPVals = pVals.map(function(r,i){return corrPValue(r, corrNsU[i]);});
+        var sPVals = sVals.map(function(r,i){return corrPValue(r, corrNsU[i]);});
         var distTracesU = [];
         if (allValsU.length > 0) {
           distTracesU.push({
@@ -1576,13 +1533,19 @@ def _build_html(
         distTracesU.push({
           x:dims, y:pVals, type:'bar', name:'Pearson r',
           marker:{color:'#6366f1'},
-          hovertemplate:'%{x}: r = %{y:.4f}<extra>Pearson</extra>',
+          text:pPVals.map(function(p){return sigLabel(p);}),
+          textposition:'outside',
+          customdata:pPVals,
+          hovertemplate:'%{x}: r = %{y:.4f}, p = %{customdata:.3e}<extra>Pearson</extra>',
           xaxis:'x2', yaxis:'y2',
         });
         distTracesU.push({
           x:dims, y:sVals, type:'bar', name:'Spearman \\u03c1',
           marker:{color:'#f59e0b'},
-          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}<extra>Spearman</extra>',
+          text:sPVals.map(function(p){return sigLabel(p);}),
+          textposition:'outside',
+          customdata:sPVals,
+          hovertemplate:'%{x}: \\u03c1 = %{y:.4f}, p = %{customdata:.3e}<extra>Spearman</extra>',
           xaxis:'x2', yaxis:'y2',
         });
         document.getElementById('umap-panel2-title').textContent = col + ' \u2014 Distribution & UMAP Correlation';
@@ -1651,56 +1614,8 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
-    /*  VARIANCE PARTITIONING                                              */
-    /* ------------------------------------------------------------------ */
-    (function() {
-      var vp = DATA.variance_partitioning;
-      if (!vp || vp.length === 0) return;
-      var pcs = vp.map(function(r){return r.PC;});
-      Plotly.newPlot('partitioning-bar', [{
-        x:pcs, y:vp.map(function(r){return r.unique_batch;}), type:'bar', name:'Unique Batch',
-        marker:{color:'#D95F02'}, hovertemplate:'%{x}<br>Unique Batch: %{y:.4f}<extra></extra>',
-      },{
-        x:pcs, y:vp.map(function(r){return r.shared;}), type:'bar', name:'Shared (Confounded)',
-        marker:{color:'#94a3b8'}, hovertemplate:'%{x}<br>Shared: %{y:.4f}<extra></extra>',
-      },{
-        x:pcs, y:vp.map(function(r){return r.unique_ancestry;}), type:'bar', name:'Unique Ancestry',
-        marker:{color:'#1B9E77'}, hovertemplate:'%{x}<br>Unique Ancestry: %{y:.4f}<extra></extra>',
-      },{
-        x:pcs, y:vp.map(function(r){return r.residual;}), type:'bar', name:'Residual',
-        marker:{color:'#e2e8f0'}, hovertemplate:'%{x}<br>Residual: %{y:.4f}<extra></extra>',
-      }], {
-        ...LAYOUT_BASE, barmode:'stack',
-        xaxis:{...LAYOUT_BASE.xaxis, title:'Principal Component', tickangle:-45},
-        yaxis:{...LAYOUT_BASE.yaxis, title:'Proportion of Variance (R\\u00b2)', range:[0,1.05]},
-        legend:{bgcolor:'rgba(0,0,0,0)', x:0.7, y:0.95},
-      }, CFG);
-
-      /* detailed table */
-      var tc = document.getElementById('partitioning-table-container');
-      var html = '<table class="summary-table"><thead><tr>';
-      html += '<th>PC</th><th class="num">R\\u00b2 Full</th><th class="num">R\\u00b2 Batch</th>';
-      html += '<th class="num">R\\u00b2 Ancestry</th><th class="num">Unique Batch</th>';
-      html += '<th class="num">Unique Ancestry</th><th class="num">Shared</th>';
-      html += '<th class="num">Residual</th></tr></thead><tbody>';
-      vp.forEach(function(r) {
-        html += '<tr><td>' + r.PC + '</td>';
-        html += '<td class="num">' + r.r2_full.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.r2_batch.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.r2_ancestry.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.unique_batch.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.unique_ancestry.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.shared.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.residual.toFixed(4) + '</td></tr>';
-      });
-      html += '</tbody></table>';
-      tc.innerHTML = html;
-    })();
-
-    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
-    /* ------------------------------------------------------------------ */
-    (function() {
+    /* ------------------------------------------------------------------ />
       const variables = [...new Set(DATA.assoc_rows.map(r => r.Variable))];
       const pcs = DATA.assoc_pcs;
       const z = variables.map(v =>
@@ -1743,99 +1658,6 @@ def _build_html(
         yaxis: { ...LAYOUT_BASE.yaxis, title: '', automargin: true },
         margin: { t: 15, r: 90, b: 80, l: 160 },
       }, CFG);
-    })();
-
-    /* ------------------------------------------------------------------ */
-    /*  SEX × PC ASSOCIATIONS                                              */
-    /* ------------------------------------------------------------------ */
-    (function() {
-      const pcs = DATA.sex_pc.map(r => r.PC);
-      const rpb = DATA.sex_pc.map(r => r.r_pointbiserial);
-      const colors = rpb.map(v => v >= 0 ? '#4393C3' : '#D6604D');
-
-      Plotly.newPlot('sex-pc-bar', [{
-        x: pcs, y: rpb, type: 'bar',
-        marker: { color: colors, line: { width: 0 } },
-        hovertemplate: '%{x}<br>Point-biserial r: %{y:.4f}<extra></extra>',
-      }], {
-        ...LAYOUT_BASE,
-        xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45 },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Point-biserial r (M vs F)' },
-        shapes: [{ type: 'line', x0: -0.5, x1: pcs.length - 0.5, y0: 0, y1: 0,
-                   line: { color: '#94a3b8', width: 1, dash: 'dot' } }],
-      }, CFG);
-
-      /* sex association table */
-      const tc = document.getElementById('sex-pc-table-container');
-      let html = '<table class="summary-table"><thead><tr>';
-      html += '<th>PC</th><th class="num">\\u03b7\\u00b2</th><th class="num">Point-biserial <em>r</em></th>';
-      html += '<th class="num"><em>p</em> (PB)</th><th class="num">Kruskal\\u2013Wallis <em>H</em></th>';
-      html += '<th class="num"><em>p</em> (KW)</th></tr></thead><tbody>';
-      DATA.sex_pc.forEach(r => {
-        const pbSig = r.p_pointbiserial != null && r.p_pointbiserial < 0.05 ? 'sig' : 'ns';
-        const kwSig = r.p_kruskal != null && r.p_kruskal < 0.05 ? 'sig' : 'ns';
-        const pPB = r.p_pointbiserial != null
-          ? (r.p_pointbiserial < 0.001 ? r.p_pointbiserial.toExponential(2) : r.p_pointbiserial.toFixed(4))
-          : 'N/A';
-        const pKW = r.p_kruskal != null
-          ? (r.p_kruskal < 0.001 ? r.p_kruskal.toExponential(2) : r.p_kruskal.toFixed(4))
-          : 'N/A';
-        html += '<tr>';
-        html += '<td>' + r.PC + '</td>';
-        html += '<td class="num">' + r.eta2.toFixed(4) + '</td>';
-        html += '<td class="num">' + r.r_pointbiserial.toFixed(4) + '</td>';
-        html += '<td class="num ' + pbSig + '">' + pPB + '</td>';
-        html += '<td class="num">' + (r.kruskal_H != null ? r.kruskal_H.toFixed(2) : 'N/A') + '</td>';
-        html += '<td class="num ' + kwSig + '">' + pKW + '</td>';
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      tc.innerHTML = html;
-    })();
-
-    /* ------------------------------------------------------------------ */
-    /*  BATCH VS ANCESTRY                                                  */
-    /* ------------------------------------------------------------------ */
-    (function() {
-      const pcs = DATA.batch_records.map(r => r.PC);
-      const batch = DATA.batch_records.map(r => r.Batch_eta2);
-      const ancestry = DATA.batch_records.map(r => r.Ancestry_eta2);
-
-      Plotly.newPlot('batch-bar', [{
-        x: pcs, y: batch, type: 'bar', name: 'Batch (\\u03b7\\u00b2)',
-        marker: { color: '#D95F02', line: { width: 0 } },
-        hovertemplate: '%{x}<br>Batch \\u03b7\\u00b2: %{y:.4f}<extra></extra>',
-      }, {
-        x: pcs, y: ancestry, type: 'bar', name: 'Ancestry (\\u03b7\\u00b2)',
-        marker: { color: '#1B9E77', line: { width: 0 } },
-        hovertemplate: '%{x}<br>Ancestry \\u03b7\\u00b2: %{y:.4f}<extra></extra>',
-      }], {
-        ...LAYOUT_BASE,
-        barmode: 'group',
-        xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45 },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: '\\u03b7\\u00b2 (Effect Size)' },
-        legend: { bgcolor: 'rgba(0,0,0,0)', x: 0.75, y: 0.95 },
-      }, CFG);
-    })();
-
-    /* ------------------------------------------------------------------ */
-    /*  SUMMARY TABLES                                                     */
-    /* ------------------------------------------------------------------ */
-    (function() {
-      function buildCountTable(id, data, labelCol) {
-        const tbl = document.getElementById(id);
-        let html = '<thead><tr><th>' + labelCol + '</th><th class="num">Count</th><th class="num">%</th></tr></thead><tbody>';
-        const total = Object.values(data).reduce((a, b) => a + b, 0);
-        Object.entries(data).forEach(([k, v]) => {
-          html += '<tr><td>' + k + '</td><td class="num">' + v + '</td><td class="num">' + (100 * v / total).toFixed(1) + '%</td></tr>';
-        });
-        html += '<tr style="font-weight:600;background:var(--surface2)"><td>Total</td><td class="num">' + total + '</td><td class="num">100%</td></tr>';
-        html += '</tbody>';
-        tbl.innerHTML = html;
-      }
-      buildCountTable('tbl-superpop', DATA.sample_summary.superpop_counts, 'Superpopulation');
-      buildCountTable('tbl-batch', DATA.sample_summary.batch_counts, 'Batch');
-      buildCountTable('tbl-sex', DATA.sample_summary.sex_counts, 'Sex');
     })();
 
     </script>
@@ -1896,20 +1718,8 @@ def generate_report(
     print("[06] Computing PC–QC associations …")
     assoc_rows, assoc_pcs = _compute_associations(merged, n_pcs_assoc)
 
-    print("[06] Computing batch vs ancestry …")
-    batch_records, batch_pcs = _compute_batch_ancestry(merged, n_pcs_assoc)
-
     print("[06] Computing confounding assessment …")
     confounding_results = _compute_confounding(merged)
-
-    print("[06] Computing sex × PC associations …")
-    sex_pc_records = _compute_sex_pc_associations(merged, n_pcs_assoc)
-
-    print("[06] Computing variance partitioning …")
-    variance_partitioning = _compute_variance_partitioning(merged, n_pcs_assoc)
-
-    print("[06] Computing sample summary …")
-    sample_summary = _compute_sample_summary(merged)
 
     print("[06] Generating HTML …")
     html = _build_html(
@@ -1917,9 +1727,7 @@ def generate_report(
         mp_cutoff_pcs,
         scatter_data, numeric_cols, umap1, umap2, n_umap_pcs,
         assoc_rows, assoc_pcs,
-        batch_records, batch_pcs,
-        confounding_results, sex_pc_records, sample_summary,
-        variance_partitioning,
+        confounding_results,
         n_samples, n_populations, n_superpops,
     )
 

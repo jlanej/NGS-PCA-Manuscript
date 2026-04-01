@@ -176,10 +176,12 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "partitioning", "heatmap",
-                        "sex", "batch", "summary"]:
+                        "confounding", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
+        for removed in ["partitioning", "sex", "batch", "summary"]:
+            assert f'id="section-{removed}"' not in content, \
+                f"Report should not contain removed section: {removed}"
 
     def test_report_mentions_marchenko_pastur_and_dynamic_umap_pcs(self):
         path = os.path.join(REPORT_DIR, "index.html")
@@ -205,36 +207,12 @@ class TestInteractiveReport:
         assert "chi2" in content or "χ²" in content or "chi-squared" in content.lower()
         assert "cramers_v" in content or "Cram" in content
 
-    def test_report_has_sex_pc_analysis(self):
-        path = os.path.join(REPORT_DIR, "index.html")
-        with open(path, encoding="utf-8") as fh:
-            content = fh.read()
-        assert "sex_pc" in content or "point-biserial" in content.lower() or "pointbiserial" in content.lower()
-        assert "kruskal" in content.lower()
-
-    def test_report_has_summary_tables(self):
-        path = os.path.join(REPORT_DIR, "index.html")
-        with open(path, encoding="utf-8") as fh:
-            content = fh.read()
-        assert "summary-table" in content
-        assert "sample_summary" in content
-
     def test_report_uses_light_theme(self):
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         assert "--bg: #f8fafc;" in content
         assert "plot_bgcolor: '#ffffff'" in content
-
-    def test_report_has_variance_partitioning(self):
-        """Variance partitioning section should be present with its stacked bar chart."""
-        path = os.path.join(REPORT_DIR, "index.html")
-        with open(path, encoding="utf-8") as fh:
-            content = fh.read()
-        assert "variance_partitioning" in content
-        assert "unique_batch" in content
-        assert "unique_ancestry" in content
-        assert "partitioning-bar" in content
 
     def test_report_has_3d_pca_scatter(self):
         """PCA scatter should use scatter3d with selectable PC axes."""
@@ -361,6 +339,18 @@ class TestInteractiveReport:
             "Continuous UMAP companion title should mention Distribution"
         assert "y0:rng[0]" in content, "Distribution violin should have low cutoff line shape"
         assert "y0:rng[1]" in content, "Distribution violin should have high cutoff line shape"
+
+    def test_report_continuous_companion_shows_significance(self):
+        """Correlation bar charts should annotate significance with *, **, *** labels."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "sigLabel" in content, "Report should have sigLabel helper function"
+        assert "corrPValue" in content, "Report should compute correlation p-values"
+        assert "corrN" in content, "Report should count valid correlation pairs"
+        assert "normalCDF" in content, "Report should implement normal CDF for p-values"
+        assert "textposition:'outside'" in content, \
+            "Significance labels should be positioned outside bars"
 
     def test_report_slider_clamps_colorscale(self):
         """Sliders clamp the colorscale (cmin/cmax) while keeping all points in scatter."""
