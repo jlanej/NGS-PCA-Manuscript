@@ -52,7 +52,7 @@ echo ""
 echo "[Step 6] Permutation test of η² significance …"
 python "${SCRIPT_DIR}/scripts/07_permutation_test.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
-    --n-permutations "${NGSPCA_PERMUTATIONS:-500}"
+    --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
 
 echo ""
 echo "[Step 7] Interactive HTML report …"
