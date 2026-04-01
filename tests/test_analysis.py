@@ -319,6 +319,58 @@ class TestInteractiveReport:
             "Report should explain eta-squared formula"
         assert "ANOVA" in content, "Report should mention ANOVA"
 
+    def test_report_has_filter_info_elements(self):
+        """Report should have colorscale-clamping info banners for PCA and UMAP sliders."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "pca-filter-info" in content, "Report should have PCA filter info div"
+        assert "umap-filter-info" in content, "Report should have UMAP filter info div"
+        assert "filter-info" in content, "Report should have filter-info CSS class"
+        assert "updateFilterInfo" in content, "Report should have updateFilterInfo function"
+        assert "hideFilterInfo" in content, "Report should have hideFilterInfo function"
+        assert "Colorscale clamped to" in content, "Report should describe colorscale clamping"
+
+    def test_report_has_violin_plots(self):
+        """Companion panels should use violin+box plots for categorical colour."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "'violin'" in content or "type:'violin'" in content, \
+            "Report should use violin plot type"
+        assert "meanline" in content, "Violins should include mean-line option"
+        assert "scalemode" in content, "Violins should use scalemode to reflect counts"
+
+    def test_report_has_proportion_bars(self):
+        """Companion panels should include proportion bar charts for categorical colour."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Distributions & Proportions" in content, \
+            "Categorical companion panel should be titled 'Distributions & Proportions'"
+        assert "% of samples" in content, "Proportion chart should label x-axis as % of samples"
+
+    def test_report_continuous_companion_has_distribution(self):
+        """Continuous companion panels should show metric distribution with slider cutoff lines."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Distribution & PC Correlation" in content, \
+            "Continuous PCA companion title should mention Distribution"
+        assert "Distribution & UMAP Correlation" in content, \
+            "Continuous UMAP companion title should mention Distribution"
+        assert "y0:rng[0]" in content, "Distribution violin should have low cutoff line shape"
+        assert "y0:rng[1]" in content, "Distribution violin should have high cutoff line shape"
+
+    def test_report_slider_clamps_colorscale(self):
+        """Sliders clamp the colorscale (cmin/cmax) while keeping all points in scatter."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "cmin:rng[0]" in content, "Scatter should use cmin to clamp colorscale low"
+        assert "cmax:rng[1]" in content, "Scatter should use cmax to clamp colorscale high"
+        assert "updateFilterInfo" in content, "Scatter functions should call updateFilterInfo"
+
 
 class TestCiConfiguration:
     def test_ci_subset_is_1000(self):
