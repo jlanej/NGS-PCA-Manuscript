@@ -381,7 +381,7 @@ def _compute_relatedness_distance(
     For every pair of first-degree relatives (parent–child and siblings)
     present in both the pedigree and the NGS-PCA data, compute the Euclidean
     distance between them in the top *k* PCs (Marchenko–Pastur selected) and
-    compare to the nearest non-relative from the same population and batch.
+    compare to the nearest non-relative anywhere in the dataset.
 
     Returns a dict with the comparison table, Wilcoxon test results, and
     summary counts.
@@ -443,17 +443,11 @@ def _compute_relatedness_distance(
     if not pair_type:
         return None
 
-    # --- Precompute per-(batch, population) PC matrices ----------------------
+    # --- Precompute full PC matrix -------------------------------------------
     df_idx = df.set_index("SAMPLE")
     pc_matrix = df_idx[pc_cols].values  # (n_samples, k)
     sample_list = df_idx.index.values   # aligned with pc_matrix rows
     sample_to_idx = {s: i for i, s in enumerate(sample_list)}
-
-    group_indices: dict[tuple[str, str], list[int]] = defaultdict(list)
-    for i, s in enumerate(sample_list):
-        batch = str(df_idx.loc[s, "RELEASE_BATCH"])
-        pop = str(df_idx.loc[s, "POPULATION"])
-        group_indices[(batch, pop)].append(i)
 
     # --- Compute distances ---------------------------------------------------
     records = []
@@ -472,31 +466,23 @@ def _compute_relatedness_distance(
             vec_j = pc_matrix[idx_j]
             d_ij = float(np.sqrt(np.sum((vec_i - vec_j) ** 2)))
 
-            # Nearest non-relative in same batch+population
-            batch_i = str(df_idx.loc[i_sample, "RELEASE_BATCH"])
-            pop_i = str(df_idx.loc[i_sample, "POPULATION"])
-            group = group_indices.get((batch_i, pop_i), [])
+            # Nearest non-relative anywhere in the dataset (vectorized)
             relatives_of_i = first_degree.get(i_sample, set())
+            exclude_idx = {idx_i} | {sample_to_idx[r] for r in relatives_of_i
+                                     if r in sample_to_idx}
+            diffs = pc_matrix - vec_i          # (n_samples, k)
+            dists = np.sqrt(np.sum(diffs ** 2, axis=1))   # (n_samples,)
+            dists[list(exclude_idx)] = np.inf
+            d_nearest = float(np.min(dists))
 
-            d_nearest = float("inf")
-            for g_idx in group:
-                g_sample = sample_list[g_idx]
-                if g_sample == i_sample or g_sample in relatives_of_i:
-                    continue
-                d = float(np.sqrt(np.sum((vec_i - pc_matrix[g_idx]) ** 2)))
-                if d < d_nearest:
-                    d_nearest = d
-
-            if d_nearest == float("inf"):
-                continue  # no non-relative in same group
+            if not np.isfinite(d_nearest):
+                continue  # no non-relative found (should never happen)
 
             records.append({
                 "individual": i_sample,
                 "relative": j_sample,
                 "d_relative": d_ij,
                 "d_nearest_nonrelative": d_nearest,
-                "batch": batch_i,
-                "population": pop_i,
                 "relation_type": rtype,
             })
 
@@ -1076,8 +1062,8 @@ def _build_html(
         <ul>
           <li>Compute the Euclidean distance <em>d(i, j)</em> in the top <em>k</em> PCs selected
               by the Marchenko–Pastur cutoff.</li>
-          <li>Compute the minimum Euclidean distance from <em>i</em> to any non-relative in the
-              same population and batch: <em>d(i, nearest non-relative)</em>.</li>
+          <li>Compute the minimum Euclidean distance from <em>i</em> to any non-relative
+              anywhere in the dataset: <em>d(i, nearest non-relative)</em>.</li>
         </ul>
         <p>
           A paired <strong>Wilcoxon signed-rank test</strong> compares the two distance distributions.
@@ -1863,7 +1849,7 @@ def _build_html(
              + 'consistent with NGS-PCA capturing technical rather than familial variation.'
            : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && relFarther
              ? 'The test is significant, but relatives are on average <strong>farther</strong> apart '
-               + 'than the nearest unrelated neighbour in the same batch and population. '
+               + 'than the nearest unrelated neighbour anywhere in the dataset. '
                + 'This is consistent with NGS-PCA capturing technical rather than familial variation: '
                + 'genotype PCA would pull relatives <em>closer</em>, whereas NGS-PCA shows no such clustering.'
            : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && !relFarther
