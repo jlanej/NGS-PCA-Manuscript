@@ -51,6 +51,13 @@ def batch_ancestry_summary():
     return pd.read_csv(path, sep="\t")
 
 
+@pytest.fixture(scope="module")
+def permutation_results():
+    path = os.path.join(OUTPUT_DIR, "permutation_eta2_results.tsv")
+    assert os.path.isfile(path), f"Permutation results not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
 # ---------------------------------------------------------------------------
 # Merge & mapping tests
 # ---------------------------------------------------------------------------
@@ -89,6 +96,9 @@ EXPECTED_FILES = [
     "batch_vs_ancestry.png",
     "batch_vs_ancestry_detail.tsv",
     "batch_vs_ancestry_summary.tsv",
+    "permutation_eta2_results.tsv",
+    "permutation_eta2_batch.png",
+    "permutation_eta2_nulldist.png",
 ]
 
 
@@ -418,6 +428,35 @@ class TestScientificValidation:
         ].iloc[0]
         assert batch_max > 0, "Batch max η² should be > 0"
         assert ancestry_max > 0, "Ancestry max η² should be > 0"
+
+
+# ---------------------------------------------------------------------------
+# Permutation test validation
+# ---------------------------------------------------------------------------
+class TestPermutationTest:
+    def test_results_has_expected_columns(self, permutation_results):
+        expected_cols = {"Variable", "PC", "observed_eta2", "mean_null_eta2",
+                         "p_value", "n_permutations"}
+        assert expected_cols.issubset(set(permutation_results.columns))
+
+    def test_results_has_both_variables(self, permutation_results):
+        variables = set(permutation_results["Variable"])
+        assert "RELEASE_BATCH" in variables
+        assert "SUPERPOPULATION" in variables
+
+    def test_pvalues_in_valid_range(self, permutation_results):
+        """All p-values should be in (0, 1]."""
+        assert (permutation_results["p_value"] > 0).all()
+        assert (permutation_results["p_value"] <= 1).all()
+
+    def test_observed_eta2_nonnegative(self, permutation_results):
+        assert (permutation_results["observed_eta2"] >= 0).all()
+
+    def test_mean_null_less_than_observed_for_batch(self, permutation_results):
+        """Mean null η² should generally be less than observed for batch PCs."""
+        batch = permutation_results[permutation_results["Variable"] == "RELEASE_BATCH"]
+        # At least one PC should have observed > mean null
+        assert (batch["observed_eta2"] > batch["mean_null_eta2"]).any()
 
 
 # ---------------------------------------------------------------------------
