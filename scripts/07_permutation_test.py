@@ -330,7 +330,7 @@ def main() -> None:
                         default=os.environ.get("NGSPCA_DATA_DIR", "1000G"))
     parser.add_argument("--n-pcs", type=int, default=0,
                         help="Number of PCs (0 = Marchenko–Pastur auto)")
-    parser.add_argument("--n-permutations", type=int, default=10_000)
+    parser.add_argument("--n-permutations", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-nulls", action="store_true",
                         help="Save full null distribution matrices as .npz")
