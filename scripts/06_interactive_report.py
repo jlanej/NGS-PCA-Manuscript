@@ -517,6 +517,76 @@ def _compute_relatedness_distance(
 
 
 # ---------------------------------------------------------------------------
+# Permutation test results for report
+# ---------------------------------------------------------------------------
+
+def _compute_permutation_for_report(
+    df: pd.DataFrame,
+    output_dir: str,
+    mp_n_pcs: int,
+    n_permutations: int = 500,
+    seed: int = 42,
+):
+    """Load permutation results from TSV and compute null-distribution histograms.
+
+    Generates null histograms for all MP-selected PCs (not just top N) so the
+    HTML report can offer a full PC selector.  Returns None if
+    permutation_eta2_results.tsv has not been generated yet.
+    """
+    results_path = os.path.join(output_dir, "permutation_eta2_results.tsv")
+    if not os.path.isfile(results_path):
+        return None
+
+    results = pd.read_csv(results_path, sep="\t")
+    pc_cols = sorted(results["PC"].unique().tolist(), key=lambda p: int(p[2:]))
+    variables = ["RELEASE_BATCH", "SUPERPOPULATION"]
+
+    # Compute compact null distributions for ALL MP-selected PCs
+    df = df.copy()
+    df["RELEASE_BATCH"] = df["RELEASE_BATCH"].astype(str)
+    rng = np.random.default_rng(seed)
+    null_hists: dict = {}
+
+    for var in variables:
+        null_hists[var] = {}
+        valid = df[var].notna()
+        labels_arr = df.loc[valid, var].values.copy()
+        values_matrix = df.loc[valid, pc_cols].values
+        shuffled_series = pd.Series(labels_arr.copy())
+        null_mat = np.empty((n_permutations, len(pc_cols)))
+        for i in range(n_permutations):
+            shuffled_series[:] = rng.permutation(labels_arr)
+            for j in range(len(pc_cols)):
+                null_mat[i, j] = eta_squared(shuffled_series, values_matrix[:, j])
+        for j, pc in enumerate(pc_cols):
+            counts, edges = np.histogram(null_mat[:, j], bins=40)
+            null_hists[var][pc] = {
+                "counts": counts.tolist(),
+                "bin_edges": [float(e) for e in edges.tolist()],
+            }
+
+    # Build per-PC results keyed by variable
+    results_by_var: dict = {}
+    for var in variables:
+        sub = results[results["Variable"] == var]
+        results_by_var[var] = {
+            row["PC"]: {
+                "observed_eta2": float(row["observed_eta2"]),
+                "mean_null_eta2": float(row["mean_null_eta2"]),
+                "p_value": float(row["p_value"]),
+            }
+            for _, row in sub.iterrows()
+        }
+
+    return {
+        "pc_cols": pc_cols,
+        "results": results_by_var,
+        "null_hists": null_hists,
+        "n_permutations_full": int(results["n_permutations"].iloc[0]),
+    }
+
+
+# ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 
@@ -537,6 +607,7 @@ def _build_html(
     n_populations,
     n_superpops,
     relatedness_results=None,
+    permutation_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -569,6 +640,7 @@ def _build_html(
         "n_populations": n_populations,
         "n_superpops": n_superpops,
         "relatedness_distance": relatedness_results,
+        "permutation": permutation_results,
     }))
 
     html = textwrap.dedent("""\
@@ -874,6 +946,7 @@ def _build_html(
       <a href="#section-umap">UMAP</a>
       <a href="#section-confounding">Confounding</a>
       <a href="#section-relatedness">Relatedness</a>
+      <a href="#section-permutation">Permutation Test</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
 
@@ -1085,6 +1158,92 @@ def _build_html(
         <div class="plot-card">
           <div class="plot-card-header"><h3>Paired Comparison (dot plot)</h3></div>
           <div class="plot-card-body"><div id="relatedness-paired" style="height:500px"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Permutation Test -->
+    <div class="report-section" id="section-permutation">
+      <h2>Permutation Test of η² Significance</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          Effect sizes (η²) quantify how much variance in each PC is explained by
+          <strong>RELEASE_BATCH</strong> or <strong>SUPERPOPULATION</strong>, but an effect
+          size alone cannot establish whether the association is larger than expected by
+          chance. A non-parametric permutation test provides exact p-values with no
+          distributional assumptions — it tests whether each observed η² is inconsistent
+          with random label assignment.
+        </p>
+        <p>
+          The manuscript's central claim is that NGS-PCA primarily captures
+          <em>technical</em> (batch) rather than <em>biological</em> (ancestry) variation.
+          Formal testing of <strong>both</strong> variables on every
+          Marchenko–Pastur-selected PC is therefore essential: we expect batch η² to be
+          statistically significant on multiple PCs, while ancestry η² should generally
+          be non-significant or smaller.
+        </p>
+        <h3>Method</h3>
+        <p>
+          For each of the <em>k</em> Marchenko–Pastur-selected PCs and each grouping
+          variable (RELEASE_BATCH, SUPERPOPULATION):
+        </p>
+        <ol>
+          <li><strong>Observed η²</strong> — computed with the true labels using a
+              one-way ANOVA decomposition:
+              η² = SS<sub>between</sub> / SS<sub>total</sub>.</li>
+          <li><strong>Null distribution</strong> — the variable's labels are randomly
+              shuffled across all samples and η² is recomputed.  This is repeated
+              <em>N</em> times (see Results below).  Each shuffle preserves group sizes
+              by construction (<code>np.random.permutation</code>) but destroys any
+              real association.</li>
+          <li><strong>Empirical p-value</strong> (Phipson &amp; Smyth, 2010 conservative
+              correction):
+              <code>p = (# permutations where η²<sub>perm</sub> ≥ η²<sub>obs</sub> + 1)
+              / (N + 1)</code>.
+              The +1 in numerator and denominator prevents p = 0 and is conservative.</li>
+        </ol>
+        <p>
+          Significance thresholds:
+          *** p &lt; 0.001 &nbsp;·&nbsp; ** p &lt; 0.01 &nbsp;·&nbsp; * p &lt; 0.05
+          &nbsp;·&nbsp; ns p ≥ 0.05.
+        </p>
+        <h3>Results</h3>
+        <p id="permutation-summary"></p>
+      </div>
+
+      <!-- Summary: –log10(p) Manhattan-style plot -->
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>Global Significance Overview — −log<sub>10</sub>(<em>p</em>) per PC</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="perm-pval-plot" style="height:340px"></div>
+        </div>
+      </div>
+
+      <!-- Effect size bar chart with sig annotations -->
+      <div class="plot-card" style="margin-top:1rem">
+        <div class="plot-card-header">
+          <h3>Observed η² with Significance Annotations</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="perm-eta2-plot" style="height:380px"></div>
+        </div>
+      </div>
+
+      <!-- Null distribution explorer (PC selector) -->
+      <div class="plot-card" style="margin-top:1rem">
+        <div class="plot-card-header">
+          <h3>Null Distribution Explorer</h3>
+          <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+            <label style="font-size:0.85rem;font-weight:600">Select PC:
+              <select id="perm-pc-select" style="margin-left:0.4rem;font-size:0.85rem;padding:0.2rem 0.4rem;border:1px solid var(--border);border-radius:4px;background:var(--surface)"></select>
+            </label>
+          </div>
+        </div>
+        <div class="plot-card-body">
+          <div id="perm-null-plot" style="height:360px"></div>
         </div>
       </div>
     </div>
@@ -1946,6 +2105,222 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  PERMUTATION TEST                                                    */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var pm = DATA.permutation;
+      if (!pm || !pm.pc_cols || pm.pc_cols.length === 0) {
+        document.getElementById('permutation-summary').textContent =
+          'Permutation test results not yet available. Run scripts/07_permutation_test.py first.';
+        return;
+      }
+
+      var pcs = pm.pc_cols;
+      var vars = ['RELEASE_BATCH', 'SUPERPOPULATION'];
+      var varLabels = {'RELEASE_BATCH': 'Batch', 'SUPERPOPULATION': 'Ancestry'};
+      var varColors = {'RELEASE_BATCH': '#D95F02', 'SUPERPOPULATION': '#1B9E77'};
+      var nPerm = pm.n_permutations_full;
+
+      /* Helper: sig label */
+      function sigLabel(p) {
+        if (p < 0.001) return '***';
+        if (p < 0.01)  return '**';
+        if (p < 0.05)  return '*';
+        return 'ns';
+      }
+
+      /* Summary paragraph */
+      var batchSig = 0, ancSig = 0;
+      pcs.forEach(function(pc) {
+        if (pm.results['RELEASE_BATCH'][pc] && pm.results['RELEASE_BATCH'][pc].p_value < 0.05) batchSig++;
+        if (pm.results['SUPERPOPULATION'][pc] && pm.results['SUPERPOPULATION'][pc].p_value < 0.05) ancSig++;
+      });
+      document.getElementById('permutation-summary').innerHTML =
+        'Permutation test with <strong>' + nPerm + '</strong> permutations across '
+        + '<strong>' + pcs.length + '</strong> Marchenko\u2013Pastur-selected PCs. '
+        + 'RELEASE_BATCH is significant (p\u2009&lt;\u20090.05) on '
+        + '<strong>' + batchSig + '/' + pcs.length + '</strong> PCs; '
+        + 'SUPERPOPULATION is significant on '
+        + '<strong>' + ancSig + '/' + pcs.length + '</strong> PCs. '
+        + 'Significance thresholds: *** p\u2009&lt;\u20090.001 &middot; '
+        + '** p\u2009&lt;\u20090.01 &middot; * p\u2009&lt;\u20090.05 &middot; ns p\u2009\u22650.05.';
+
+      /* ---- Chart 1: -log10(p) Manhattan-style overview ---- */
+      var pvalTraces = vars.map(function(v) {
+        var xs = [], ys = [], hovers = [], symbols = [];
+        pcs.forEach(function(pc) {
+          var r = pm.results[v][pc];
+          if (!r) return;
+          var logP = r.p_value > 0 ? -Math.log10(r.p_value) : -Math.log10(1/(nPerm+1));
+          xs.push(pc);
+          ys.push(logP);
+          hovers.push(varLabels[v] + '<br>' + pc
+            + '<br>\u03b7\u00b2 = ' + r.observed_eta2.toFixed(4)
+            + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(3) : r.p_value.toFixed(4))
+            + '<br>' + sigLabel(r.p_value));
+          symbols.push(r.p_value < 0.05 ? 'circle' : 'circle-open');
+        });
+        return {
+          x: xs, y: ys, type: 'scatter', mode: 'lines+markers',
+          name: varLabels[v],
+          line: {color: varColors[v], width: 2},
+          marker: {color: varColors[v], size: 8, symbol: symbols},
+          hovertext: hovers, hoverinfo: 'text',
+        };
+      });
+      /* threshold lines */
+      var pvalShapes = [
+        {type:'line', x0:-0.5, x1:pcs.length-0.5, y0:-Math.log10(0.05), y1:-Math.log10(0.05),
+         xref:'x', yref:'y', line:{color:'#94a3b8', width:1, dash:'dot'}},
+        {type:'line', x0:-0.5, x1:pcs.length-0.5, y0:-Math.log10(0.01), y1:-Math.log10(0.01),
+         xref:'x', yref:'y', line:{color:'#64748b', width:1, dash:'dash'}},
+        {type:'line', x0:-0.5, x1:pcs.length-0.5, y0:-Math.log10(0.001), y1:-Math.log10(0.001),
+         xref:'x', yref:'y', line:{color:'#334155', width:1, dash:'longdash'}},
+      ];
+      var pvalAnnotations = [
+        {x:pcs.length-0.5, y:-Math.log10(0.05), xref:'x', yref:'y', xanchor:'right',
+         text:'p=0.05', showarrow:false, font:{size:9, color:'#94a3b8'}},
+        {x:pcs.length-0.5, y:-Math.log10(0.01), xref:'x', yref:'y', xanchor:'right',
+         text:'p=0.01', showarrow:false, font:{size:9, color:'#64748b'}},
+        {x:pcs.length-0.5, y:-Math.log10(0.001), xref:'x', yref:'y', xanchor:'right',
+         text:'p=0.001', showarrow:false, font:{size:9, color:'#334155'}},
+      ];
+      Plotly.newPlot('perm-pval-plot', pvalTraces, {
+        ...LAYOUT_BASE,
+        xaxis: {...LAYOUT_BASE.xaxis, title:'Principal Component', tickangle:-45},
+        yaxis: {...LAYOUT_BASE.yaxis, title:'\u2212log\u2081\u2080(p\u2011value)'},
+        shapes: pvalShapes,
+        annotations: pvalAnnotations,
+        legend: {x:0.01, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
+        margin: {...LAYOUT_BASE.margin, b:80},
+      }, CFG);
+
+      /* ---- Chart 2: Grouped η² bar chart with sig annotations ---- */
+      var eta2Traces = vars.map(function(v, vi) {
+        var xs = [], ys = [], hovers = [];
+        pcs.forEach(function(pc) {
+          var r = pm.results[v][pc];
+          if (!r) { xs.push(pc); ys.push(0); hovers.push(pc); return; }
+          xs.push(pc);
+          ys.push(r.observed_eta2);
+          hovers.push(varLabels[v] + '<br>' + pc
+            + '<br>\u03b7\u00b2 = ' + r.observed_eta2.toFixed(4)
+            + '<br>mean null \u03b7\u00b2 = ' + r.mean_null_eta2.toFixed(4)
+            + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(3) : r.p_value.toFixed(4))
+            + ' ' + sigLabel(r.p_value));
+        });
+        return {
+          x: xs, y: ys, type: 'bar', name: varLabels[v],
+          marker: {color: varColors[v]},
+          hovertext: hovers, hoverinfo: 'text',
+        };
+      });
+      /* sig star annotations above bars */
+      var eta2Annotations = [];
+      var yMaxAll = 0;
+      vars.forEach(function(v) {
+        pcs.forEach(function(pc) {
+          var r = pm.results[v][pc];
+          if (r && r.observed_eta2 > yMaxAll) yMaxAll = r.observed_eta2;
+        });
+      });
+      var starOffset = yMaxAll * 0.04;
+      pcs.forEach(function(pc, xi) {
+        vars.forEach(function(v) {
+          var r = pm.results[v][pc];
+          if (!r) return;
+          var lbl = sigLabel(r.p_value);
+          eta2Annotations.push({
+            x: pc, y: r.observed_eta2 + starOffset,
+            xref: 'x', yref: 'y',
+            text: lbl,
+            showarrow: false,
+            font: {size: 9, color: lbl === 'ns' ? '#94a3b8' : '#0f172a'},
+          });
+        });
+      });
+      Plotly.newPlot('perm-eta2-plot', eta2Traces, {
+        ...LAYOUT_BASE,
+        barmode: 'group',
+        xaxis: {...LAYOUT_BASE.xaxis, title:'Principal Component', tickangle:-45},
+        yaxis: {...LAYOUT_BASE.yaxis, title:'\u03b7\u00b2 (Effect Size)'},
+        annotations: eta2Annotations,
+        legend: {x:0.01, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
+        margin: {...LAYOUT_BASE.margin, b:80},
+      }, CFG);
+
+      /* ---- Chart 3: Null distribution explorer (PC selector) ---- */
+      var pcSel = document.getElementById('perm-pc-select');
+      pcs.forEach(function(pc) {
+        var opt = document.createElement('option');
+        opt.value = pc; opt.textContent = pc;
+        pcSel.appendChild(opt);
+      });
+
+      function plotNullDist(pc) {
+        var traces = vars.map(function(v) {
+          var h = pm.null_hists && pm.null_hists[v] && pm.null_hists[v][pc];
+          var r = pm.results[v][pc];
+          if (!h || !r) return null;
+          var edges = h.bin_edges;
+          var counts = h.counts;
+          /* Build bar trace from histogram bins */
+          var xMid = [], widths = [];
+          for (var i = 0; i < counts.length; i++) {
+            xMid.push((edges[i] + edges[i+1]) / 2);
+            widths.push(edges[i+1] - edges[i]);
+          }
+          return {
+            x: xMid, y: counts, type: 'bar', name: varLabels[v] + ' null',
+            width: widths,
+            marker: {color: varColors[v], opacity: 0.5},
+            hovertemplate: '\u03b7\u00b2 \u2248 %{x:.4f}<br>count: %{y}<extra>' + varLabels[v] + ' null</extra>',
+          };
+        }).filter(Boolean);
+
+        /* Observed value vertical lines as shapes */
+        var shapes = [], obsAnnotations = [];
+        vars.forEach(function(v) {
+          var r = pm.results[v][pc];
+          if (!r) return;
+          var pTxt = r.p_value < 0.001 ? r.p_value.toExponential(2) : r.p_value.toFixed(4);
+          shapes.push({
+            type: 'line',
+            x0: r.observed_eta2, x1: r.observed_eta2, y0: 0, y1: 1,
+            xref: 'x', yref: 'paper',
+            line: {color: varColors[v], width: 2, dash: 'solid'},
+          });
+          obsAnnotations.push({
+            x: r.observed_eta2, y: 0.97, xref: 'x', yref: 'paper',
+            xanchor: 'left', yanchor: 'top',
+            text: varLabels[v] + '<br>obs=' + r.observed_eta2.toFixed(4)
+              + '<br>p=' + pTxt + ' ' + sigLabel(r.p_value),
+            showarrow: true, arrowhead: 2, arrowsize: 0.8,
+            ax: 20, ay: -25,
+            font: {size: 10, color: varColors[v]},
+            bgcolor: 'rgba(255,255,255,0.85)',
+            bordercolor: varColors[v], borderwidth: 1, borderpad: 3,
+          });
+        });
+
+        Plotly.react('perm-null-plot', traces, {
+          ...LAYOUT_BASE,
+          barmode: 'overlay',
+          xaxis: {...LAYOUT_BASE.xaxis, title:'\u03b7\u00b2 (permuted)'},
+          yaxis: {...LAYOUT_BASE.yaxis, title:'Count'},
+          shapes: shapes,
+          annotations: obsAnnotations,
+          legend: {x:0.7, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
+          title: {text: pc + ' \u2014 Null Distributions', font:{size:13}, x:0.5},
+          margin: {...LAYOUT_BASE.margin, t:45},
+        }, CFG);
+      }
+
+      plotNullDist(pcs[0]);
+      pcSel.addEventListener('change', function() { plotNullDist(pcSel.value); });
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -2059,6 +2434,13 @@ def generate_report(
         merged, data_dir, mp_cutoff_pcs
     )
 
+    print("[06] Loading permutation test results …")
+    permutation_results = _compute_permutation_for_report(
+        merged, output_dir, mp_cutoff_pcs
+    )
+    if permutation_results is None:
+        print("[06]   permutation_eta2_results.tsv not found — skipping permutation section")
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -2068,6 +2450,7 @@ def generate_report(
         confounding_results,
         n_samples, n_populations, n_superpops,
         relatedness_results,
+        permutation_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)

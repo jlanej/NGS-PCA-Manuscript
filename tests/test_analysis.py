@@ -51,6 +51,13 @@ def batch_ancestry_summary():
     return pd.read_csv(path, sep="\t")
 
 
+@pytest.fixture(scope="module")
+def permutation_results():
+    path = os.path.join(OUTPUT_DIR, "permutation_eta2_results.tsv")
+    assert os.path.isfile(path), f"Permutation results not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
 # ---------------------------------------------------------------------------
 # Merge & mapping tests
 # ---------------------------------------------------------------------------
@@ -89,6 +96,9 @@ EXPECTED_FILES = [
     "batch_vs_ancestry.png",
     "batch_vs_ancestry_detail.tsv",
     "batch_vs_ancestry_summary.tsv",
+    "permutation_eta2_results.tsv",
+    "permutation_eta2_batch.png",
+    "permutation_eta2_nulldist.png",
 ]
 
 
@@ -176,7 +186,7 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "relatedness", "heatmap"]:
+                        "confounding", "relatedness", "permutation", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -389,6 +399,60 @@ class TestInteractiveReport:
         assert "cmax:rng[1]" in content, "Scatter should use cmax to clamp colorscale high"
         assert "updateFilterInfo" in content, "Scatter functions should call updateFilterInfo"
 
+    def test_report_has_permutation_section(self):
+        """Report should have permutation test section with all three interactive charts."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-permutation"' in content, \
+            "Report should have permutation section"
+        assert 'id="perm-pval-plot"' in content, \
+            "Report should have -log10(p) overview chart"
+        assert 'id="perm-eta2-plot"' in content, \
+            "Report should have eta² bar chart"
+        assert 'id="perm-null-plot"' in content, \
+            "Report should have null distribution explorer"
+        assert 'id="perm-pc-select"' in content, \
+            "Report should have PC selector dropdown"
+
+    def test_report_permutation_data_in_payload(self):
+        """Report DATA payload should include permutation results for all MP PCs."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        pm = payload.get("permutation")
+        assert pm is not None, "DATA should contain permutation key"
+        assert "pc_cols" in pm and len(pm["pc_cols"]) > 0, \
+            "permutation should list pc_cols"
+        assert "RELEASE_BATCH" in pm["results"], \
+            "permutation results should include RELEASE_BATCH"
+        assert "SUPERPOPULATION" in pm["results"], \
+            "permutation results should include SUPERPOPULATION"
+        # Null histograms for all MP PCs should be present
+        for pc in pm["pc_cols"]:
+            assert pc in pm["null_hists"]["RELEASE_BATCH"], \
+                f"null_hists missing RELEASE_BATCH/{pc}"
+            assert pc in pm["null_hists"]["SUPERPOPULATION"], \
+                f"null_hists missing SUPERPOPULATION/{pc}"
+
+    def test_report_permutation_section_has_rationale(self):
+        """Permutation section should explain the rationale and method."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Phipson" in content or "conservative" in content.lower(), \
+            "Permutation section should describe the conservative p-value correction"
+        assert "null distribution" in content.lower() or "Null distribution" in content, \
+            "Permutation section should mention null distributions"
+        assert "Marchenko" in content, \
+            "Permutation section should reference MP-selected PCs"
+
 
 class TestCiConfiguration:
     def test_ci_subset_is_1000(self):
@@ -418,6 +482,35 @@ class TestScientificValidation:
         ].iloc[0]
         assert batch_max > 0, "Batch max η² should be > 0"
         assert ancestry_max > 0, "Ancestry max η² should be > 0"
+
+
+# ---------------------------------------------------------------------------
+# Permutation test validation
+# ---------------------------------------------------------------------------
+class TestPermutationTest:
+    def test_results_has_expected_columns(self, permutation_results):
+        expected_cols = {"Variable", "PC", "observed_eta2", "mean_null_eta2",
+                         "p_value", "n_permutations"}
+        assert expected_cols.issubset(set(permutation_results.columns))
+
+    def test_results_has_both_variables(self, permutation_results):
+        variables = set(permutation_results["Variable"])
+        assert "RELEASE_BATCH" in variables
+        assert "SUPERPOPULATION" in variables
+
+    def test_pvalues_in_valid_range(self, permutation_results):
+        """All p-values should be in (0, 1]."""
+        assert (permutation_results["p_value"] > 0).all()
+        assert (permutation_results["p_value"] <= 1).all()
+
+    def test_observed_eta2_nonnegative(self, permutation_results):
+        assert (permutation_results["observed_eta2"] >= 0).all()
+
+    def test_mean_null_less_than_observed_for_batch(self, permutation_results):
+        """Mean null η² should generally be less than observed for batch PCs."""
+        batch = permutation_results[permutation_results["Variable"] == "RELEASE_BATCH"]
+        # At least one PC should have observed > mean null
+        assert (batch["observed_eta2"] > batch["mean_null_eta2"]).any()
 
 
 # ---------------------------------------------------------------------------
