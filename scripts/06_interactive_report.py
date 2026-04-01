@@ -992,7 +992,7 @@ def _build_html(
       const sel = document.getElementById(id);
       const catGroup = document.createElement('optgroup');
       catGroup.label = 'Categorical';
-      [{v:'SUPERPOPULATION',t:'Superpopulation'},{v:'RELEASE_BATCH',t:'Batch'},{v:'INFERRED_SEX',t:'Sex'},
+      [{v:'RELEASE_BATCH',t:'Batch'},{v:'SUPERPOPULATION',t:'Superpopulation'},{v:'INFERRED_SEX',t:'Sex'},
        {v:'POPULATION',t:'Population'},{v:'RELATEDNESS',t:'Relatedness'}]
         .filter(function(item) { return DATA.scatter[item.v]; })
         .forEach(function(item) {
