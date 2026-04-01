@@ -186,7 +186,7 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "relatedness", "heatmap"]:
+                        "confounding", "relatedness", "permutation", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -398,6 +398,60 @@ class TestInteractiveReport:
         assert "cmin:rng[0]" in content, "Scatter should use cmin to clamp colorscale low"
         assert "cmax:rng[1]" in content, "Scatter should use cmax to clamp colorscale high"
         assert "updateFilterInfo" in content, "Scatter functions should call updateFilterInfo"
+
+    def test_report_has_permutation_section(self):
+        """Report should have permutation test section with all three interactive charts."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-permutation"' in content, \
+            "Report should have permutation section"
+        assert 'id="perm-pval-plot"' in content, \
+            "Report should have -log10(p) overview chart"
+        assert 'id="perm-eta2-plot"' in content, \
+            "Report should have eta² bar chart"
+        assert 'id="perm-null-plot"' in content, \
+            "Report should have null distribution explorer"
+        assert 'id="perm-pc-select"' in content, \
+            "Report should have PC selector dropdown"
+
+    def test_report_permutation_data_in_payload(self):
+        """Report DATA payload should include permutation results for all MP PCs."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        pm = payload.get("permutation")
+        assert pm is not None, "DATA should contain permutation key"
+        assert "pc_cols" in pm and len(pm["pc_cols"]) > 0, \
+            "permutation should list pc_cols"
+        assert "RELEASE_BATCH" in pm["results"], \
+            "permutation results should include RELEASE_BATCH"
+        assert "SUPERPOPULATION" in pm["results"], \
+            "permutation results should include SUPERPOPULATION"
+        # Null histograms for all MP PCs should be present
+        for pc in pm["pc_cols"]:
+            assert pc in pm["null_hists"]["RELEASE_BATCH"], \
+                f"null_hists missing RELEASE_BATCH/{pc}"
+            assert pc in pm["null_hists"]["SUPERPOPULATION"], \
+                f"null_hists missing SUPERPOPULATION/{pc}"
+
+    def test_report_permutation_section_has_rationale(self):
+        """Permutation section should explain the rationale and method."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Phipson" in content or "conservative" in content.lower(), \
+            "Permutation section should describe the conservative p-value correction"
+        assert "null distribution" in content.lower() or "Null distribution" in content, \
+            "Permutation section should mention null distributions"
+        assert "Marchenko" in content, \
+            "Permutation section should reference MP-selected PCs"
 
 
 class TestCiConfiguration:

@@ -49,15 +49,15 @@ echo "[Step 5] Batch vs ancestry …"
 python "${SCRIPT_DIR}/scripts/05_batch_vs_ancestry.py" --output-dir "${OUTPUT_DIR}"
 
 echo ""
-echo "[Step 6] Interactive HTML report …"
-python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
-    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
-
-echo ""
-echo "[Step 7] Permutation test of η² significance …"
+echo "[Step 6] Permutation test of η² significance …"
 python "${SCRIPT_DIR}/scripts/07_permutation_test.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-1000}"
+
+echo ""
+echo "[Step 7] Interactive HTML report …"
+python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
 
 echo ""
 echo "=== Pipeline complete.  Outputs in ${OUTPUT_DIR}/ ==="
