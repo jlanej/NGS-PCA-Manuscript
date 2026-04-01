@@ -2250,6 +2250,7 @@ def _build_html(
         legend: {x:0.01, y:0.99, bgcolor:'rgba(255,255,255,0.8)', bordercolor:'#cbd5e1', borderwidth:1},
         margin: {...LAYOUT_BASE.margin, b:80},
       }, CFG);
+    })();
 
     /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
