@@ -1138,10 +1138,12 @@ def _build_html(
     const CFG = { responsive: true, displayModeBar: true, displaylogo: false,
                   modeBarButtonsToRemove: ['lasso2d','select2d'] };
 
-    const PAL_SUPERPOP = { AFR:'#E41A1C', AMR:'#377EB8', EAS:'#4DAF4A', EUR:'#984EA3', SAS:'#FF7F00' };
-    const PAL_BATCH    = { '698':'#1B9E77', '2504':'#D95F02' };
-    const PAL_SEX      = { M:'#4393C3', F:'#D6604D' };
-    const CAT_PALS = { SUPERPOPULATION: PAL_SUPERPOP, RELEASE_BATCH: PAL_BATCH, INFERRED_SEX: PAL_SEX };
+    const PAL_SUPERPOP    = { AFR:'#E41A1C', AMR:'#377EB8', EAS:'#4DAF4A', EUR:'#984EA3', SAS:'#FF7F00' };
+    const PAL_BATCH       = { '698':'#1B9E77', '2504':'#D95F02' };
+    const PAL_SEX         = { M:'#4393C3', F:'#D6604D' };
+    const PAL_RELATEDNESS = { related:'#D33F6A', unrelated:'#4B9B7E' };
+    const CAT_PALS = { SUPERPOPULATION: PAL_SUPERPOP, RELEASE_BATCH: PAL_BATCH,
+                       INFERRED_SEX: PAL_SEX, RELATEDNESS: PAL_RELATEDNESS };
     const PCA_PCS = ['PC1','PC2','PC3','PC4','PC5','PC6','PC7','PC8','PC9','PC10'].filter(p => DATA.scatter[p]);
     const NUMERIC_COLS = DATA.numeric_cols || [];
 
@@ -1498,22 +1500,26 @@ def _build_html(
             });
           });
         });
-        // Proportion bar traces (bottom subplot)
+        // Proportion bar traces (bottom subplot) — use explicit base for reliable rendering
         var totalN = S.SAMPLE.length;
+        var cumPct = 0;
         cats.forEach(function(cat) {
           var n = 0;
           for (var i=0; i<S.SAMPLE.length; i++) if (S[col][i]===cat) n++;
+          var pct = totalN > 0 ? 100*n/totalN : 0;
           traces.push({
-            x:[100*n/totalN], y:[col], type:'bar', orientation:'h',
+            x:[pct], y:[col], type:'bar', orientation:'h',
+            base: cumPct,
             name:cat, marker:{color:pal[cat]||'#888'},
             legendgroup:cat, showlegend:false,
             xaxis:'x2', yaxis:'y2',
             hovertemplate:cat+': '+n+' samples (<b>%{x:.1f}%</b>)<extra></extra>',
           });
+          cumPct += pct;
         });
         document.getElementById('pca-panel2-title').textContent = col + ' \u2014 Distributions & Proportions';
         Plotly.react('pca-panel2', traces, {
-          ...LAYOUT_BASE, violinmode:'group', barmode:'stack',
+          ...LAYOUT_BASE, violinmode:'group', barmode:'overlay',
           xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'Principal Component'},
           yaxis:{domain:[0.38,1], ...LAYOUT_BASE.yaxis, title:'PC Score'},
           xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'% of samples', range:[0,100]},
@@ -1680,22 +1686,26 @@ def _build_html(
             });
           });
         });
-        // Proportion bar (bottom subplot)
+        // Proportion bar (bottom subplot) — use explicit base for reliable rendering
         var totalN = S.SAMPLE.length;
+        var cumPctU = 0;
         cats.forEach(function(cat) {
           var n = 0;
           for (var i=0; i<S.SAMPLE.length; i++) if (S[col][i]===cat) n++;
+          var pct = totalN > 0 ? 100*n/totalN : 0;
           traces.push({
-            x:[100*n/totalN], y:[col], type:'bar', orientation:'h',
+            x:[pct], y:[col], type:'bar', orientation:'h',
+            base: cumPctU,
             name:cat, marker:{color:pal[cat]||'#888'},
             legendgroup:cat, showlegend:false,
             xaxis:'x2', yaxis:'y2',
             hovertemplate:cat+': '+n+' samples (<b>%{x:.1f}%</b>)<extra></extra>',
           });
+          cumPctU += pct;
         });
         document.getElementById('umap-panel2-title').textContent = col + ' \u2014 Distributions & Proportions';
         Plotly.react('umap-panel2', traces, {
-          ...LAYOUT_BASE, violinmode:'group', barmode:'stack',
+          ...LAYOUT_BASE, violinmode:'group', barmode:'overlay',
           xaxis:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'UMAP Dimension'},
           yaxis:{domain:[0.38,1], ...LAYOUT_BASE.yaxis, title:'Coordinate'},
           xaxis2:{domain:[0,1], ...LAYOUT_BASE.xaxis, title:'% of samples', range:[0,100]},
