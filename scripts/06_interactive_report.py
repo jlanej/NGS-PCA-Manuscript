@@ -792,10 +792,17 @@ def _build_html(
     <div class="report-section" id="section-scree">
       <h2>Variance Explained by Principal Components</h2>
       <p class="description">
-        The scree plot shows the proportion of total variance captured by each PC.
-        The cumulative curve indicates how many PCs are needed to reach key variance thresholds.
-        The dashed orange line marks the Marchenko–Pastur (MP) cutoff — PCs to the left of this line
-        carry more variance than expected from random noise.
+        These plots summarize the variance structure of the <em>k</em> components retained by the
+        randomized SVD (RSVD). Because RSVD is a truncated decomposition that computes only the
+        leading <em>k</em> singular values, the percentages shown are normalized to the sum of the
+        retained eigenvalues (Σ σ<sub>i</sub><sup>2</sup>, <em>i</em> = 1…<em>k</em>),
+        <strong>not</strong> to the full data-matrix variance (which requires all singular values).
+        As a result, the cumulative curve reaches 100% at the last retained PC by construction of
+        the normalization — it does <em>not</em> imply that the retained components explain all
+        variance in the original data matrix.
+        The dashed orange line marks the Marchenko–Pastur (MP) cutoff — PCs to the left carry more
+        variance than expected under a random-noise null model and are considered statistically
+        significant.
       </p>
       <div class="grid-2">
         <div class="plot-card">
@@ -1215,7 +1222,7 @@ def _build_html(
       }], {
         ...LAYOUT_BASE,
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45, dtick: 5 },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: '% Variance Explained' },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: '% Variance (Retained PCs)' },
         legend: { x: 0.65, y: 0.95, bgcolor: 'rgba(0,0,0,0)' },
       }, CFG);
 
@@ -1243,7 +1250,7 @@ def _build_html(
       }], {
         ...LAYOUT_BASE,
         xaxis: { ...LAYOUT_BASE.xaxis, title: 'Number of PCs', tickangle: -45, dtick: 5 },
-        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Cumulative Variance (%)', range: [0, 105] },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Cumulative % (Retained PCs)', range: [0, 105] },
         legend: { x: 0.7, y: 0.3, bgcolor: 'rgba(0,0,0,0)' },
       }, CFG);
     })();
