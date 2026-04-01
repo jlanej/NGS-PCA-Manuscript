@@ -176,7 +176,7 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "heatmap"]:
+                        "confounding", "relatedness", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -352,6 +352,34 @@ class TestInteractiveReport:
         assert "textposition:'outside'" in content, \
             "Significance labels should be positioned outside bars"
 
+    def test_report_has_relatedness_section(self):
+        """Report should have a pedigree-based relatedness distance section."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-relatedness"' in content, \
+            "Report should have relatedness section"
+        assert "relatedness-violin" in content, \
+            "Report should have relatedness violin plot div"
+        assert "relatedness-paired" in content, \
+            "Report should have relatedness paired dot plot div"
+        assert "Wilcoxon" in content, \
+            "Report should mention Wilcoxon signed-rank test"
+        assert "relatedness_distance" in content, \
+            "Report DATA payload should include relatedness_distance"
+
+    def test_report_relatedness_has_writeup(self):
+        """Relatedness section should have explanation of rationale and method."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "negative control" in content.lower() or "familial" in content.lower(), \
+            "Relatedness section should mention its role as a negative control"
+        assert "Euclidean distance" in content, \
+            "Relatedness section should describe Euclidean distance computation"
+        assert "nearest non-relative" in content or "nearest unrelated" in content, \
+            "Relatedness section should describe nearest non-relative comparison"
+
     def test_report_slider_clamps_colorscale(self):
         """Sliders clamp the colorscale (cmin/cmax) while keeping all points in scatter."""
         path = os.path.join(REPORT_DIR, "index.html")
@@ -390,3 +418,44 @@ class TestScientificValidation:
         ].iloc[0]
         assert batch_max > 0, "Batch max η² should be > 0"
         assert ancestry_max > 0, "Ancestry max η² should be > 0"
+
+
+# ---------------------------------------------------------------------------
+# Relatedness distance validation tests
+# ---------------------------------------------------------------------------
+class TestRelatednessDistance:
+    def test_relatedness_data_in_report_payload(self):
+        """Report DATA JSON should include relatedness_distance with expected keys."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        rd = payload.get("relatedness_distance")
+        assert rd is not None, "DATA should contain relatedness_distance"
+        for key in ["n_pairs", "n_parent_child", "n_sibling",
+                     "wilcoxon_stat", "wilcoxon_p", "mp_pcs_used",
+                     "d_relative_values", "d_nonrelative_values"]:
+            assert key in rd, f"relatedness_distance missing key: {key}"
+        assert rd["n_pairs"] > 0, "Should have at least one relative pair"
+        assert len(rd["d_relative_values"]) == rd["n_pairs"]
+        assert len(rd["d_nonrelative_values"]) == rd["n_pairs"]
+
+    def test_relatedness_wilcoxon_p_is_valid(self):
+        """Wilcoxon p-value should be a finite number in [0, 1]."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        rd = payload["relatedness_distance"]
+        p = rd["wilcoxon_p"]
+        assert p is not None, "Wilcoxon p-value should not be null"
+        assert 0.0 <= p <= 1.0, f"Wilcoxon p-value should be in [0,1], got {p}"
