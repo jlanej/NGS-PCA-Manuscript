@@ -1064,6 +1064,8 @@ def _build_html(
               by the Marchenko–Pastur cutoff.</li>
           <li>Compute the minimum Euclidean distance from <em>i</em> to any non-relative
               anywhere in the dataset: <em>d(i, nearest non-relative)</em>.</li>
+          <li>Counts are <strong>directed</strong>: each undirected relative pair contributes
+              both (<em>i</em>, <em>j</em>) and (<em>j</em>, <em>i</em>).</li>
         </ul>
         <p>
           A paired <strong>Wilcoxon signed-rank test</strong> compares the two distance distributions.
@@ -1835,7 +1837,8 @@ def _build_html(
 
       document.getElementById('relatedness-summary').innerHTML =
         '<strong>' + rd.n_pairs + '</strong> directed relative pairs analysed '
-        + '(' + rd.n_parent_child + ' parent\u2013child, ' + rd.n_sibling + ' sibling) '
+        + '(' + rd.n_parent_child + ' parent\u2013child, ' + rd.n_sibling + ' sibling; '
+        + 'each undirected pair counted twice) '
         + 'using the top <strong>' + rd.mp_pcs_used + '</strong> Marchenko\u2013Pastur-selected PCs. '
         + 'Paired Wilcoxon signed-rank test: <em>W</em>\u2009=\u2009' + statTxt
         + ', <em>p</em>\u2009=\u2009' + pTxt + sigTxt + '. '
