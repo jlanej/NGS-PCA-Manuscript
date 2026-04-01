@@ -517,6 +517,133 @@ def _compute_relatedness_distance(
 
 
 # ---------------------------------------------------------------------------
+# Ancestry distance permutation test
+# ---------------------------------------------------------------------------
+
+def _compute_ancestry_distance(
+    df: pd.DataFrame,
+    data_dir: str,
+    mp_cutoff_pcs: int,
+    n_permutations: int = 10000,
+    seed: int = 42,
+):
+    """Within- vs. between-ancestry nearest-neighbour distance permutation test.
+
+    For each individual, compute:
+      * d_within  — distance to nearest same-superpopulation neighbour
+      * d_between — distance to nearest different-superpopulation neighbour
+      * delta     — d_between − d_within  (positive ⇒ same-ancestry is closer)
+
+    A permutation test (global shuffle of ancestry labels) assesses whether
+    the observed mean delta is larger than expected by chance.  If the global
+    test is significant, a secondary within-batch permutation determines
+    whether the signal persists after accounting for batch–ancestry
+    confounding.
+    """
+    from scipy.spatial.distance import squareform, pdist
+
+    pc_cols = [f"PC{i}" for i in range(1, mp_cutoff_pcs + 1)]
+    pc_cols = [c for c in pc_cols if c in df.columns]
+    if len(pc_cols) < 2:
+        return None
+
+    df_idx = df.set_index("SAMPLE")
+    # Filter out individuals with missing superpopulation
+    has_superpop = df_idx["SUPERPOPULATION"].notna()
+    df_idx = df_idx[has_superpop]
+    pc_matrix = df_idx[pc_cols].values.astype(np.float64)  # (n, k)
+    superpop = df_idx["SUPERPOPULATION"].values.astype(str) # (n,)
+    batch = df_idx["RELEASE_BATCH"].values.astype(str)      # (n,)
+
+    n = len(pc_matrix)
+
+    # --- Full pairwise distance matrix (precompute once) ---------------------
+    dist_matrix = squareform(pdist(pc_matrix))  # (n, n)
+    np.fill_diagonal(dist_matrix, np.inf)
+
+    # --- Vectorised mean-delta computation -----------------------------------
+    def compute_mean_delta(labels):
+        """Return (mean_delta, d_within_arr, d_between_arr, valid_mask)."""
+        d_within = np.full(n, np.nan)
+        d_between = np.full(n, np.nan)
+        unique_labels = np.unique(labels)
+        for g in unique_labels:
+            g_mask = labels == g
+            if g_mask.sum() < 2:
+                continue  # singleton group — no within-group neighbour
+            not_g = ~g_mask
+            # within: min distance to another member of the same group
+            d_within[g_mask] = dist_matrix[np.ix_(g_mask, g_mask)].min(axis=1)
+            # between: min distance to any member of a different group
+            d_between[g_mask] = dist_matrix[np.ix_(g_mask, not_g)].min(axis=1)
+        valid = ~np.isnan(d_within)
+        if not np.any(valid):
+            return 0.0, d_within, d_between, valid
+        mean_delta = float(np.mean(d_between[valid] - d_within[valid]))
+        return mean_delta, d_within, d_between, valid
+
+    # --- Step 1–2: observed --------------------------------------------------
+    observed_mean_delta, d_within, d_between, valid = compute_mean_delta(superpop)
+    n_valid = int(np.sum(valid))
+    n_excluded = int(np.sum(~valid))
+    if n_valid == 0:
+        return None
+
+    delta = d_between[valid] - d_within[valid]
+
+    # --- Per-superpopulation summaries ---------------------------------------
+    per_superpop: dict = {}
+    for g in np.unique(superpop):
+        g_idx = (superpop == g) & valid
+        if not np.any(g_idx):
+            continue
+        per_superpop[g] = {
+            "median_d_within": float(np.median(d_within[g_idx])),
+            "median_d_between": float(np.median(d_between[g_idx])),
+            "median_delta": float(np.median(d_between[g_idx] - d_within[g_idx])),
+            "n": int(np.sum(g_idx)),
+        }
+
+    # --- Step 3: Global permutation test -------------------------------------
+    rng = np.random.default_rng(seed)
+    null_deltas = np.empty(n_permutations)
+    for p in range(n_permutations):
+        shuffled = rng.permutation(superpop)
+        null_deltas[p] = compute_mean_delta(shuffled)[0]
+
+    p_value_global = float(
+        (np.sum(null_deltas >= observed_mean_delta) + 1) / (n_permutations + 1)
+    )
+
+    # --- Step 4: Within-batch permutation (always run for transparency) ------
+    null_deltas_wb = np.empty(n_permutations)
+    for p in range(n_permutations):
+        shuffled = superpop.copy()
+        for b in np.unique(batch):
+            mask = batch == b
+            shuffled[mask] = rng.permutation(shuffled[mask])
+        null_deltas_wb[p] = compute_mean_delta(shuffled)[0]
+
+    p_value_within_batch = float(
+        (np.sum(null_deltas_wb >= observed_mean_delta) + 1) / (n_permutations + 1)
+    )
+
+    return {
+        "n_samples": n_valid,
+        "n_excluded": n_excluded,
+        "mp_pcs_used": len(pc_cols),
+        "observed_mean_delta": float(observed_mean_delta),
+        "p_value_global": p_value_global,
+        "p_value_within_batch": p_value_within_batch,
+        "n_permutations": n_permutations,
+        "per_superpop": per_superpop,
+        "d_within_values": d_within[valid].tolist(),
+        "d_between_values": d_between[valid].tolist(),
+        "null_distribution_global": null_deltas.tolist(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Permutation test results for report
 # ---------------------------------------------------------------------------
 
@@ -598,6 +725,7 @@ def _build_html(
     n_superpops,
     relatedness_results=None,
     permutation_results=None,
+    ancestry_distance_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -631,6 +759,7 @@ def _build_html(
         "n_superpops": n_superpops,
         "relatedness_distance": relatedness_results,
         "permutation": permutation_results,
+        "ancestry_distance": ancestry_distance_results,
     }))
 
     html = textwrap.dedent("""\
@@ -936,6 +1065,7 @@ def _build_html(
       <a href="#section-umap">UMAP</a>
       <a href="#section-confounding">Confounding</a>
       <a href="#section-relatedness">Relatedness</a>
+      <a href="#section-ancestry-distance">Ancestry Distance</a>
       <a href="#section-permutation">Permutation Test</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
@@ -1148,6 +1278,64 @@ def _build_html(
         <div class="plot-card">
           <div class="plot-card-header"><h3>Paired Comparison (dot plot)</h3></div>
           <div class="plot-card-body"><div id="relatedness-paired" style="height:500px"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ancestry Distance -->
+    <div class="report-section" id="section-ancestry-distance">
+      <h2>Within- vs. Between-Ancestry Distance</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          This analysis parallels the pedigree-based relatedness distance test above but asks a
+          complementary question: does NGS-PCA group individuals by <strong>genetic ancestry</strong>
+          (superpopulation)?  The relatedness test showed that relatives are not closer together than
+          strangers; this test asks whether same-ancestry individuals are closer together than
+          different-ancestry individuals.
+        </p>
+        <p>
+          Critically, this analysis makes <strong>no prior assumption</strong> about what NGS-PCA
+          captures.  If the result is non-significant, it supports the claim that NGS-PCA reflects
+          technical variation.  If significant, we characterise the signal honestly and investigate
+          whether it is driven by batch–ancestry confounding.
+        </p>
+        <h3>Method</h3>
+        <p>
+          For each individual <em>i</em> in the dataset, we compute the Euclidean distance in the
+          top <em>k</em> Marchenko–Pastur-selected PCs to the <strong>nearest same-superpopulation
+          neighbour</strong> (<em>d</em><sub>within</sub>) and the <strong>nearest
+          different-superpopulation neighbour</strong> (<em>d</em><sub>between</sub>).  The test
+          statistic is the mean of δ = <em>d</em><sub>between</sub> −
+          <em>d</em><sub>within</sub>.  A positive mean δ means same-ancestry individuals are
+          closer together.
+        </p>
+        <p>
+          <strong>Global permutation test:</strong> superpopulation labels are shuffled uniformly
+          across all samples and mean δ is recomputed.  This is repeated <em>N</em> times to build
+          a null distribution.  The empirical <em>p</em>-value uses the Phipson &amp; Smyth (2010)
+          conservative correction:
+          <code>p = (# permutations where δ<sub>perm</sub> ≥ δ<sub>obs</sub> + 1) / (N + 1)</code>.
+        </p>
+        <p>
+          <strong>Within-batch permutation (diagnostic):</strong> if the global test is significant,
+          we ask whether the signal persists after accounting for batch–ancestry confounding.
+          Superpopulation labels are permuted only <em>within</em> each sequencing batch, preserving
+          the batch–ancestry frequency structure.  If the within-batch <em>p</em>-value is
+          non-significant while the global <em>p</em>-value is significant, the apparent ancestry
+          signal is explained by batch confounding.
+        </p>
+        <h3>Results</h3>
+        <p id="ancestry-distance-summary"></p>
+      </div>
+      <div class="grid-2">
+        <div class="plot-card">
+          <div class="plot-card-header"><h3>Within- vs. Between-Ancestry Nearest-Neighbour Distance</h3></div>
+          <div class="plot-card-body"><div id="ancestry-violin" style="height:500px"></div></div>
+        </div>
+        <div class="plot-card">
+          <div class="plot-card-header"><h3>Permutation Null Distribution (Global)</h3></div>
+          <div class="plot-card-body"><div id="ancestry-null-hist" style="height:500px"></div></div>
         </div>
       </div>
     </div>
@@ -2081,6 +2269,151 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  ANCESTRY DISTANCE                                                   */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var ad = DATA.ancestry_distance;
+      if (!ad || !ad.d_within_values || ad.d_within_values.length === 0) {
+        document.getElementById('ancestry-distance-summary').textContent =
+          'Ancestry distance analysis not available (insufficient data).';
+        return;
+      }
+
+      /* Format p-values */
+      function fmtP(p) {
+        if (p == null) return 'N/A';
+        return p < 0.001 ? p.toExponential(3) : p.toFixed(4);
+      }
+      function sigTag(p) {
+        if (p == null) return '';
+        if (p < 0.001) return ' (***)';
+        if (p < 0.01)  return ' (**)';
+        if (p < 0.05)  return ' (*)';
+        return ' (n.s.)';
+      }
+
+      var pGlobal = ad.p_value_global;
+      var pBatch  = ad.p_value_within_batch;
+      var delta   = ad.observed_mean_delta;
+
+      /* Build interpretation text */
+      var interp = '';
+      if (pGlobal >= 0.05) {
+        interp = 'The global test does <strong>not</strong> reject the null hypothesis \u2014 '
+          + 'same-ancestry individuals are not systematically closer together than different-ancestry '
+          + 'individuals in NGS-PCA space. This is the strongest evidence that NGS-PCA does not '
+          + 'group by genetic ancestry.';
+      } else if (pGlobal < 0.05 && pBatch != null && pBatch >= 0.05) {
+        interp = 'The global test is significant (<em>p</em> = ' + fmtP(pGlobal) + '), but the '
+          + 'within-batch permutation is <strong>not</strong> significant (<em>p</em> = '
+          + fmtP(pBatch) + '). The apparent ancestry signal is <strong>explained by '
+          + 'batch\u2013ancestry confounding</strong> \u2014 once batch structure is held constant, '
+          + 'ancestry labels no longer predict proximity in NGS-PCA space.';
+      } else if (pGlobal < 0.05 && pBatch != null && pBatch < 0.05) {
+        interp = 'Both the global test (<em>p</em> = ' + fmtP(pGlobal) + ') and the within-batch '
+          + 'permutation (<em>p</em> = ' + fmtP(pBatch) + ') are significant, suggesting '
+          + '<strong>genuine residual ancestry structure</strong> in NGS-PCA space beyond batch '
+          + 'confounding. Effect size and practical relevance should be compared to the batch \u03b7\u00b2 '
+          + 'and relatedness distance results.';
+      }
+
+      /* Per-superpopulation breakdown */
+      var spParts = [];
+      if (ad.per_superpop) {
+        var groups = Object.keys(ad.per_superpop).sort();
+        groups.forEach(function(g) {
+          var s = ad.per_superpop[g];
+          spParts.push(g + ' (n=' + s.n + ', median \u03b4=' + s.median_delta.toFixed(3) + ')');
+        });
+      }
+
+      document.getElementById('ancestry-distance-summary').innerHTML =
+        '<strong>' + ad.n_samples + '</strong> individuals analysed'
+        + (ad.n_excluded > 0 ? ' (' + ad.n_excluded + ' excluded as singleton-superpopulation members)' : '')
+        + ' using the top <strong>' + ad.mp_pcs_used + '</strong> Marchenko\u2013Pastur-selected PCs. '
+        + 'Observed mean \u03b4 (d<sub>between</sub> \u2212 d<sub>within</sub>) = <strong>'
+        + delta.toFixed(4) + '</strong> '
+        + '(' + (delta > 0 ? 'same-ancestry individuals are closer' : 'same-ancestry individuals are not closer') + '). '
+        + '<br><strong>Global permutation test</strong> (' + ad.n_permutations + ' permutations): '
+        + '<em>p</em> = ' + fmtP(pGlobal) + sigTag(pGlobal) + '. '
+        + '<br><strong>Within-batch permutation</strong>: '
+        + '<em>p</em> = ' + fmtP(pBatch) + sigTag(pBatch) + '. '
+        + '<br>' + interp
+        + (spParts.length > 0 ? '<br><em>Per-superpopulation:</em> ' + spParts.join('; ') + '.' : '');
+
+      /* --- Figure A: Violin / box plot ---------------------------------- */
+      var traceWithin = {
+        y: ad.d_within_values,
+        type: 'violin', name: 'Within-ancestry (nearest)',
+        box: {visible: true},
+        meanline: {visible: true},
+        marker: {color: '#E41A1C', size: 3, opacity: 0.5},
+        fillcolor: 'rgba(228,26,28,0.25)',
+        line: {color: '#E41A1C'},
+        scalemode: 'count',
+        side: 'positive',
+        points: 'all',
+        jitter: 0.4,
+        pointpos: -0.5,
+      };
+      var traceBetween = {
+        y: ad.d_between_values,
+        type: 'violin', name: 'Between-ancestry (nearest)',
+        box: {visible: true},
+        meanline: {visible: true},
+        marker: {color: '#377EB8', size: 3, opacity: 0.5},
+        fillcolor: 'rgba(55,126,184,0.25)',
+        line: {color: '#377EB8'},
+        scalemode: 'count',
+        side: 'positive',
+        points: 'all',
+        jitter: 0.4,
+        pointpos: -0.5,
+      };
+      Plotly.newPlot('ancestry-violin', [traceWithin, traceBetween], {
+        ...LAYOUT_BASE,
+        yaxis: {...LAYOUT_BASE.yaxis, title: 'Euclidean distance (top ' + ad.mp_pcs_used + ' PCs)'},
+        showlegend: true,
+        legend: {x: 0.55, y: 1},
+        annotations: [{
+          x: 0.5, y: 1.08, xref: 'paper', yref: 'paper', showarrow: false,
+          text: 'Global <i>p</i> = ' + fmtP(pGlobal) + sigTag(pGlobal)
+            + ' · Within-batch <i>p</i> = ' + fmtP(pBatch) + sigTag(pBatch),
+          font: {size: 12}
+        }],
+      }, CFG);
+
+      /* --- Figure B: Permutation null histogram ------------------------- */
+      if (ad.null_distribution_global && ad.null_distribution_global.length > 0) {
+        var traceNull = {
+          x: ad.null_distribution_global,
+          type: 'histogram',
+          name: 'Null distribution',
+          marker: {color: 'rgba(100,116,139,0.5)', line: {color: '#475569', width: 1}},
+          nbinsx: 50,
+        };
+        var shapes = [{
+          type: 'line',
+          x0: delta, x1: delta,
+          y0: 0, y1: 1, yref: 'paper',
+          line: {color: '#dc2626', width: 2.5, dash: 'dash'},
+        }];
+        Plotly.newPlot('ancestry-null-hist', [traceNull], {
+          ...LAYOUT_BASE,
+          xaxis: {...LAYOUT_BASE.xaxis, title: 'Mean \u03b4 (d_between \u2212 d_within)'},
+          yaxis: {...LAYOUT_BASE.yaxis, title: 'Count'},
+          shapes: shapes,
+          annotations: [{
+            x: delta, y: 1.08, xref: 'x', yref: 'paper', showarrow: false,
+            text: 'Observed = ' + delta.toFixed(4) + '<br><i>p</i> = ' + fmtP(pGlobal) + sigTag(pGlobal),
+            font: {size: 12, color: '#dc2626'},
+          }],
+          showlegend: false,
+        }, CFG);
+      }
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  PERMUTATION TEST                                                    */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -2321,6 +2654,7 @@ def generate_report(
     n_pcs_scree: int = 0,
     n_pcs_assoc: int = 20,
     n_pcs_umap_max: int = 0,
+    n_permutations: int = 10000,
 ) -> str:
     """Generate the interactive HTML report.
 
@@ -2366,6 +2700,12 @@ def generate_report(
         merged, data_dir, mp_cutoff_pcs
     )
 
+    print(f"[06] Computing ancestry distance permutation test ({n_permutations} permutations) …")
+    ancestry_distance_results = _compute_ancestry_distance(
+        merged, data_dir, mp_cutoff_pcs,
+        n_permutations=n_permutations,
+    )
+
     print("[06] Loading permutation test results …")
     permutation_results = _compute_permutation_for_report(
         merged, output_dir, mp_cutoff_pcs
@@ -2383,6 +2723,7 @@ def generate_report(
         n_samples, n_populations, n_superpops,
         relatedness_results,
         permutation_results,
+        ancestry_distance_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)
@@ -2408,9 +2749,14 @@ def main() -> None:
     parser.add_argument("--n-pcs-assoc", type=int, default=20)
     parser.add_argument("--n-pcs-umap-max", type=int, default=0,
                         help="Optional upper bound for MP-selected UMAP PCs (0 = no cap)")
+    parser.add_argument("--n-permutations", type=int,
+                        default=int(os.environ.get("NGSPCA_PERMUTATIONS", "10000")),
+                        help="Number of permutations for ancestry distance test "
+                             "(default: NGSPCA_PERMUTATIONS env var or 10000)")
     args = parser.parse_args()
     generate_report(args.data_dir, args.output_dir, args.report_dir,
-                    args.n_pcs_scree, args.n_pcs_assoc, args.n_pcs_umap_max)
+                    args.n_pcs_scree, args.n_pcs_assoc, args.n_pcs_umap_max,
+                    args.n_permutations)
 
 
 if __name__ == "__main__":

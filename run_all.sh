@@ -57,7 +57,8 @@ python "${SCRIPT_DIR}/scripts/07_permutation_test.py" \
 echo ""
 echo "[Step 7] Interactive HTML report …"
 python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
-    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
+    --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
 
 echo ""
 echo "=== Pipeline complete.  Outputs in ${OUTPUT_DIR}/ ==="
