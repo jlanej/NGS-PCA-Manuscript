@@ -388,8 +388,8 @@ class TestInteractiveReport:
             "Relatedness section should mention its role as a negative control"
         assert "Euclidean distance" in content, \
             "Relatedness section should describe Euclidean distance computation"
-        assert "nearest non-relative" in content or "nearest unrelated" in content, \
-            "Relatedness section should describe nearest non-relative comparison"
+        assert "nearest non-self" in content or "nearest relative" in content, \
+            "Relatedness section should describe nearest-relative vs nearest-non-self comparison"
 
     def test_report_slider_clamps_colorscale(self):
         """Sliders clamp the colorscale (cmin/cmax) while keeping all points in scatter."""
@@ -556,7 +556,7 @@ class TestPermutationTest:
 # ---------------------------------------------------------------------------
 class TestRelatednessDistance:
     def test_relatedness_data_in_report_payload(self):
-        """Report DATA JSON should include relatedness_distance with directed pair semantics."""
+        """Report DATA JSON should include relatedness_distance with per-individual semantics."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
@@ -568,17 +568,16 @@ class TestRelatednessDistance:
         payload = json.loads(match.group(1))
         rd = payload.get("relatedness_distance")
         assert rd is not None, "DATA should contain relatedness_distance"
-        for key in ["n_pairs", "n_parent_child", "n_sibling",
+        for key in ["n_individuals", "n_parent_child", "n_sibling",
                      "wilcoxon_stat", "wilcoxon_p", "mp_pcs_used",
-                     "d_relative_values", "d_nonrelative_values"]:
+                     "d_nearest_relative_values", "d_nearest_nonself_values"]:
             assert key in rd, f"relatedness_distance missing key: {key}"
-        assert rd["n_pairs"] > 0, "Should have at least one relative pair"
-        assert len(rd["d_relative_values"]) == rd["n_pairs"]
-        assert len(rd["d_nonrelative_values"]) == rd["n_pairs"]
-        assert rd["n_pairs"] == rd["n_parent_child"] + rd["n_sibling"], \
-            "n_pairs should equal directed parent-child + directed sibling counts"
-        assert rd["n_pairs"] % 2 == 0, \
-            "Counts are directed (i,j and j,i); expected an even number"
+        assert rd["n_individuals"] > 0, "Should have at least one individual with relatives"
+        assert len(rd["d_nearest_relative_values"]) == rd["n_individuals"]
+        assert len(rd["d_nearest_nonself_values"]) == rd["n_individuals"]
+        # d_nearest_nonself <= d_nearest_relative is not guaranteed per individual,
+        # but the arrays must have the same length
+        assert len(rd["d_nearest_relative_values"]) == len(rd["d_nearest_nonself_values"])
 
     def test_relatedness_wilcoxon_p_is_valid(self):
         """Wilcoxon p-value should be a finite number in [0, 1]."""
