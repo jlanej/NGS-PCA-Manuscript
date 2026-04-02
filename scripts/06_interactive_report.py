@@ -430,17 +430,38 @@ def _compute_relatedness_distance(
             first_degree[mother].add(child)
             pair_type[tuple(sorted([child, mother]))] = "parent-child"
 
-    # Siblings: children sharing a family ID
-    children_rows = ped[(ped["Paternal ID"] != "0") | (ped["Maternal ID"] != "0")]
-    fam_children: dict[str, list[str]] = defaultdict(list)
-    for _, row in children_rows.iterrows():
+    # Siblings: explicit Siblings column in pedigree
+    if "Siblings" in ped.columns:
+        for _, row in ped.iterrows():
+            iid = row["Individual ID"]
+            if iid not in ngs_samples:
+                continue
+            sib_str = row.get("Siblings", "0")
+            if pd.isna(sib_str) or str(sib_str).strip() in ("0", ""):
+                continue
+            for token in str(sib_str).split(","):
+                sib_id = token.strip().split()[0]  # drop trailing annotations
+                if sib_id and sib_id in ngs_samples and sib_id != iid:
+                    first_degree[iid].add(sib_id)
+                    first_degree[sib_id].add(iid)
+                    key = tuple(sorted([iid, sib_id]))
+                    if key not in pair_type:
+                        pair_type[key] = "sibling"
+
+    # Siblings: children sharing at least one parent (shared-parent detection)
+    by_parent: dict[str, list[str]] = defaultdict(list)
+    for _, row in ped.iterrows():
         iid = row["Individual ID"]
-        if iid in ngs_samples:
-            fam_children[row["Family ID"]].append(iid)
-    for fam, members in fam_children.items():
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                a, b = members[i], members[j]
+        if iid not in ngs_samples:
+            continue
+        for col in ("Paternal ID", "Maternal ID"):
+            pid = row[col]
+            if pid != "0":
+                by_parent[pid].append(iid)
+    for _pid, children in by_parent.items():
+        for i in range(len(children)):
+            for j in range(i + 1, len(children)):
+                a, b = children[i], children[j]
                 first_degree[a].add(b)
                 first_degree[b].add(a)
                 key = tuple(sorted([a, b]))
@@ -1311,7 +1332,8 @@ def _build_html(
         <h3>Method</h3>
         <p>
           We parse the 1000 Genomes pedigree file to identify all first-degree relative pairs
-          (parent–child from Paternal/Maternal ID columns, and siblings sharing a family ID) that
+          (parent–child from Paternal/Maternal ID columns, and siblings from the
+          pedigree Siblings column and shared-parent detection) that
           are both present in the NGS-PCA dataset. For each individual <em>i</em> with at least one
           relative in the dataset:
         </p>
