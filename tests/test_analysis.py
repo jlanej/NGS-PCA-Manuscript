@@ -186,7 +186,8 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "relatedness", "permutation", "heatmap"]:
+                        "confounding", "relatedness", "ancestry-distance",
+                        "permutation", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -554,3 +555,74 @@ class TestRelatednessDistance:
         p = rd["wilcoxon_p"]
         assert p is not None, "Wilcoxon p-value should not be null"
         assert 0.0 <= p <= 1.0, f"Wilcoxon p-value should be in [0,1], got {p}"
+
+
+# ---------------------------------------------------------------------------
+# Ancestry distance validation tests
+# ---------------------------------------------------------------------------
+class TestAncestryDistance:
+    def test_ancestry_data_in_report_payload(self):
+        """Report DATA JSON should include ancestry_distance with required keys."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        ad = payload.get("ancestry_distance")
+        assert ad is not None, "DATA should contain ancestry_distance"
+        for key in ["n_samples", "n_excluded", "mp_pcs_used",
+                     "observed_mean_delta", "p_value_global",
+                     "p_value_within_batch", "n_permutations",
+                     "per_superpop", "d_within_values", "d_between_values",
+                     "null_hist_counts", "null_hist_edges"]:
+            assert key in ad, f"ancestry_distance missing key: {key}"
+        assert ad["n_samples"] > 0, "Should have analysed at least one individual"
+        assert len(ad["d_within_values"]) == ad["n_samples"]
+        assert len(ad["d_between_values"]) == ad["n_samples"]
+        assert len(ad["null_hist_counts"]) > 0, "Should have pre-binned null histogram"
+        assert len(ad["null_hist_edges"]) == len(ad["null_hist_counts"]) + 1, \
+            "Histogram edges should have one more element than counts"
+
+    def test_ancestry_p_value_is_valid(self):
+        """Global and within-batch p-values should be in [0, 1]."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        ad = payload["ancestry_distance"]
+        assert 0.0 <= ad["p_value_global"] <= 1.0, \
+            f"Global p-value should be in [0,1], got {ad['p_value_global']}"
+        assert 0.0 <= ad["p_value_within_batch"] <= 1.0, \
+            f"Within-batch p-value should be in [0,1], got {ad['p_value_within_batch']}"
+
+    def test_ancestry_section_exists(self):
+        """Report should have ancestry distance section with plot divs."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-ancestry-distance"' in content, \
+            "Report should have ancestry distance section"
+        assert "ancestry-violin" in content, \
+            "Report should have ancestry violin plot div"
+        assert "ancestry-null-hist" in content, \
+            "Report should have ancestry null histogram div"
+
+    def test_ancestry_has_writeup(self):
+        """Ancestry distance section should have explanation of method."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "superpopulation" in content.lower(), \
+            "Ancestry section should mention superpopulation"
+        assert "nearest" in content.lower(), \
+            "Ancestry section should describe nearest-neighbour comparison"
+        assert "permutation" in content.lower(), \
+            "Ancestry section should describe permutation test"
