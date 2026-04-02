@@ -2,9 +2,10 @@
 """00_merge_pcs_qc.py - Merge principal components with sample QC metadata.
 
 Reads svd.pcs.txt, svd.samples.txt, and sample_qc.tsv.  Strips the
-'.by1000.' suffix from PC sample IDs so they match the QC SAMPLE_ID column,
-then maps the 26 1000 Genomes sub-populations to their superpopulation
-(AFR / AMR / EAS / EUR / SAS).
+'.by1000.' suffix from PC sample IDs so they match the QC SAMPLE_ID column.
+
+sample_qc.tsv is expected to contain SUPERPOPULATION (AFR/AMR/EAS/EUR/SAS)
+and FAMILY_ROLE (pedigree relationship) as distinct columns.
 
 Outputs
 -------
@@ -16,16 +17,6 @@ import os
 import sys
 
 import pandas as pd
-
-# 1000 Genomes sub-population → superpopulation mapping
-POP_TO_SUPERPOP = {
-    "ACB": "AFR", "ASW": "AFR", "ESN": "AFR", "GWD": "AFR",
-    "LWK": "AFR", "MSL": "AFR", "YRI": "AFR",
-    "CLM": "AMR", "MXL": "AMR", "PEL": "AMR", "PUR": "AMR",
-    "CDX": "EAS", "CHB": "EAS", "CHS": "EAS", "JPT": "EAS", "KHV": "EAS",
-    "CEU": "EUR", "FIN": "EUR", "GBR": "EUR", "IBS": "EUR", "TSI": "EUR",
-    "BEB": "SAS", "GIH": "SAS", "ITU": "SAS", "PJL": "SAS", "STU": "SAS",
-}
 
 
 def merge_pcs_qc(data_dir: str, output_dir: str, n_samples: int = 0) -> pd.DataFrame:
@@ -49,11 +40,6 @@ def merge_pcs_qc(data_dir: str, output_dir: str, n_samples: int = 0) -> pd.DataF
     pcs["SAMPLE"] = pcs["SAMPLE"].str.replace(r"\.by1000\.$", "", regex=True)
 
     qc = pd.read_csv(os.path.join(data_dir, "qc_output", "sample_qc.tsv"), sep="\t")
-    # The file's SUPERPOPULATION column actually contains family-structure
-    # labels (unrel / father / mother …).  Rename it and derive the real
-    # superpopulation from POPULATION.
-    qc = qc.rename(columns={"SUPERPOPULATION": "FAMILY_ROLE"})
-    qc["SUPERPOPULATION"] = qc["POPULATION"].map(POP_TO_SUPERPOP)
 
     merged = pcs.merge(qc, left_on="SAMPLE", right_on="SAMPLE_ID", how="inner")
     merged = merged.drop(columns=["SAMPLE_ID"])

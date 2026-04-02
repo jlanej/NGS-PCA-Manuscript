@@ -39,14 +39,6 @@ PALETTE_SUPERPOP = {
 }
 PALETTE_BATCH = {"698": "#1B9E77", "2504": "#D95F02"}
 PALETTE_SEX = {"M": "#4393C3", "F": "#D6604D"}
-POP_TO_SUPERPOP = {
-    "ACB": "AFR", "ASW": "AFR", "ESN": "AFR", "GWD": "AFR",
-    "LWK": "AFR", "MSL": "AFR", "YRI": "AFR",
-    "CLM": "AMR", "MXL": "AMR", "PEL": "AMR", "PUR": "AMR",
-    "CDX": "EAS", "CHB": "EAS", "CHS": "EAS", "JPT": "EAS", "KHV": "EAS",
-    "CEU": "EUR", "FIN": "EUR", "GBR": "EUR", "IBS": "EUR", "TSI": "EUR",
-    "BEB": "SAS", "GIH": "SAS", "ITU": "SAS", "PJL": "SAS", "STU": "SAS",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +63,6 @@ def _load_full_merged_from_data_dir(data_dir: str) -> pd.DataFrame:
     pcs = pd.read_csv(pcs_path, sep="\t")
     pcs["SAMPLE"] = pcs["SAMPLE"].str.replace(r"\.by1000\.$", "", regex=True)
     qc = pd.read_csv(qc_path, sep="\t")
-    if "SUPERPOPULATION" in qc.columns:
-        qc = qc.rename(columns={"SUPERPOPULATION": "FAMILY_ROLE"})
-    qc["SUPERPOPULATION"] = qc["POPULATION"].map(POP_TO_SUPERPOP)
     merged = pcs.merge(qc, left_on="SAMPLE", right_on="SAMPLE_ID", how="inner")
     if "SAMPLE_ID" in merged.columns:
         merged = merged.drop(columns=["SAMPLE_ID"])
