@@ -186,7 +186,8 @@ class TestInteractiveReport:
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
-                        "confounding", "relatedness", "permutation", "heatmap"]:
+                        "confounding", "relatedness", "ancestry-distance",
+                        "permutation", "heatmap"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -577,12 +578,14 @@ class TestAncestryDistance:
                      "observed_mean_delta", "p_value_global",
                      "p_value_within_batch", "n_permutations",
                      "per_superpop", "d_within_values", "d_between_values",
-                     "null_distribution_global"]:
+                     "null_hist_counts", "null_hist_edges"]:
             assert key in ad, f"ancestry_distance missing key: {key}"
         assert ad["n_samples"] > 0, "Should have analysed at least one individual"
         assert len(ad["d_within_values"]) == ad["n_samples"]
         assert len(ad["d_between_values"]) == ad["n_samples"]
-        assert len(ad["null_distribution_global"]) == ad["n_permutations"]
+        assert len(ad["null_hist_counts"]) > 0, "Should have pre-binned null histogram"
+        assert len(ad["null_hist_edges"]) == len(ad["null_hist_counts"]) + 1, \
+            "Histogram edges should have one more element than counts"
 
     def test_ancestry_p_value_is_valid(self):
         """Global and within-batch p-values should be in [0, 1]."""

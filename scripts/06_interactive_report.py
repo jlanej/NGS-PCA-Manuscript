@@ -522,7 +522,6 @@ def _compute_relatedness_distance(
 
 def _compute_ancestry_distance(
     df: pd.DataFrame,
-    data_dir: str,
     mp_cutoff_pcs: int,
     n_permutations: int = 10000,
     seed: int = 42,
@@ -539,6 +538,9 @@ def _compute_ancestry_distance(
     test is significant, a secondary within-batch permutation determines
     whether the signal persists after accounting for batch–ancestry
     confounding.
+
+    The two permutation tests use independent RNG streams (via ``rng.spawn``)
+    so that each is reproducible regardless of whether the other is run.
     """
     from scipy.spatial.distance import squareform, pdist
 
@@ -561,12 +563,16 @@ def _compute_ancestry_distance(
     dist_matrix = squareform(pdist(pc_matrix))  # (n, n)
     np.fill_diagonal(dist_matrix, np.inf)
 
+    # --- Pre-index group structure (avoids np.unique per permutation) ---------
+    unique_labels = np.unique(superpop)
+    unique_batches = np.unique(batch)
+    batch_masks = {b: (batch == b) for b in unique_batches}
+
     # --- Vectorised mean-delta computation -----------------------------------
     def compute_mean_delta(labels):
         """Return (mean_delta, d_within_arr, d_between_arr, valid_mask)."""
         d_within = np.full(n, np.nan)
         d_between = np.full(n, np.nan)
-        unique_labels = np.unique(labels)
         for g in unique_labels:
             g_mask = labels == g
             if g_mask.sum() < 2:
@@ -593,7 +599,7 @@ def _compute_ancestry_distance(
 
     # --- Per-superpopulation summaries ---------------------------------------
     per_superpop: dict = {}
-    for g in np.unique(superpop):
+    for g in unique_labels:
         g_idx = (superpop == g) & valid
         if not np.any(g_idx):
             continue
@@ -604,11 +610,14 @@ def _compute_ancestry_distance(
             "n": int(np.sum(g_idx)),
         }
 
-    # --- Step 3: Global permutation test -------------------------------------
+    # --- Independent RNG streams for the two permutation tests ---------------
     rng = np.random.default_rng(seed)
+    rng_global, rng_wb = rng.spawn(2)
+
+    # --- Step 3: Global permutation test -------------------------------------
     null_deltas = np.empty(n_permutations)
     for p in range(n_permutations):
-        shuffled = rng.permutation(superpop)
+        shuffled = rng_global.permutation(superpop)
         null_deltas[p] = compute_mean_delta(shuffled)[0]
 
     p_value_global = float(
@@ -619,14 +628,18 @@ def _compute_ancestry_distance(
     null_deltas_wb = np.empty(n_permutations)
     for p in range(n_permutations):
         shuffled = superpop.copy()
-        for b in np.unique(batch):
-            mask = batch == b
-            shuffled[mask] = rng.permutation(shuffled[mask])
+        for b in unique_batches:
+            mask = batch_masks[b]
+            shuffled[mask] = rng_wb.permutation(shuffled[mask])
         null_deltas_wb[p] = compute_mean_delta(shuffled)[0]
 
     p_value_within_batch = float(
         (np.sum(null_deltas_wb >= observed_mean_delta) + 1) / (n_permutations + 1)
     )
+
+    # --- Pre-bin the null distribution for the histogram plot ----------------
+    n_bins = 50
+    counts_global, bin_edges_global = np.histogram(null_deltas, bins=n_bins)
 
     return {
         "n_samples": n_valid,
@@ -639,7 +652,8 @@ def _compute_ancestry_distance(
         "per_superpop": per_superpop,
         "d_within_values": d_within[valid].tolist(),
         "d_between_values": d_between[valid].tolist(),
-        "null_distribution_global": null_deltas.tolist(),
+        "null_hist_counts": counts_global.tolist(),
+        "null_hist_edges": bin_edges_global.tolist(),
     }
 
 
@@ -2383,14 +2397,22 @@ def _build_html(
         }],
       }, CFG);
 
-      /* --- Figure B: Permutation null histogram ------------------------- */
-      if (ad.null_distribution_global && ad.null_distribution_global.length > 0) {
+      /* --- Figure B: Permutation null histogram (pre-binned server-side) -- */
+      if (ad.null_hist_counts && ad.null_hist_edges && ad.null_hist_counts.length > 0) {
+        /* Compute bin centres from edges for the bar chart */
+        var binCentres = [];
+        var binWidths = [];
+        for (var bi = 0; bi < ad.null_hist_counts.length; bi++) {
+          binCentres.push((ad.null_hist_edges[bi] + ad.null_hist_edges[bi + 1]) / 2);
+          binWidths.push(ad.null_hist_edges[bi + 1] - ad.null_hist_edges[bi]);
+        }
         var traceNull = {
-          x: ad.null_distribution_global,
-          type: 'histogram',
+          x: binCentres,
+          y: ad.null_hist_counts,
+          width: binWidths,
+          type: 'bar',
           name: 'Null distribution',
           marker: {color: 'rgba(100,116,139,0.5)', line: {color: '#475569', width: 1}},
-          nbinsx: 50,
         };
         var shapes = [{
           type: 'line',
@@ -2403,6 +2425,7 @@ def _build_html(
           xaxis: {...LAYOUT_BASE.xaxis, title: 'Mean \u03b4 (d_between \u2212 d_within)'},
           yaxis: {...LAYOUT_BASE.yaxis, title: 'Count'},
           shapes: shapes,
+          bargap: 0.05,
           annotations: [{
             x: delta, y: 1.08, xref: 'x', yref: 'paper', showarrow: false,
             text: 'Observed = ' + delta.toFixed(4) + '<br><i>p</i> = ' + fmtP(pGlobal) + sigTag(pGlobal),
@@ -2702,7 +2725,7 @@ def generate_report(
 
     print(f"[06] Computing ancestry distance permutation test ({n_permutations} permutations) …")
     ancestry_distance_results = _compute_ancestry_distance(
-        merged, data_dir, mp_cutoff_pcs,
+        merged, mp_cutoff_pcs,
         n_permutations=n_permutations,
     )
 
