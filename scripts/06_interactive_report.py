@@ -430,17 +430,38 @@ def _compute_relatedness_distance(
             first_degree[mother].add(child)
             pair_type[tuple(sorted([child, mother]))] = "parent-child"
 
-    # Siblings: children sharing a family ID
-    children_rows = ped[(ped["Paternal ID"] != "0") | (ped["Maternal ID"] != "0")]
-    fam_children: dict[str, list[str]] = defaultdict(list)
-    for _, row in children_rows.iterrows():
+    # Siblings: explicit Siblings column in pedigree
+    if "Siblings" in ped.columns:
+        for _, row in ped.iterrows():
+            iid = row["Individual ID"]
+            if iid not in ngs_samples:
+                continue
+            sib_str = row.get("Siblings", "0")
+            if pd.isna(sib_str) or str(sib_str).strip() in ("0", ""):
+                continue
+            for token in str(sib_str).split(","):
+                sib_id = token.strip().split()[0]  # drop trailing annotations
+                if sib_id and sib_id in ngs_samples and sib_id != iid:
+                    first_degree[iid].add(sib_id)
+                    first_degree[sib_id].add(iid)
+                    key = tuple(sorted([iid, sib_id]))
+                    if key not in pair_type:
+                        pair_type[key] = "sibling"
+
+    # Siblings: children sharing at least one parent (shared-parent detection)
+    by_parent: dict[str, list[str]] = defaultdict(list)
+    for _, row in ped.iterrows():
         iid = row["Individual ID"]
-        if iid in ngs_samples:
-            fam_children[row["Family ID"]].append(iid)
-    for fam, members in fam_children.items():
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                a, b = members[i], members[j]
+        if iid not in ngs_samples:
+            continue
+        for col in ("Paternal ID", "Maternal ID"):
+            pid = row[col]
+            if pid != "0":
+                by_parent[pid].append(iid)
+    for _pid, children in by_parent.items():
+        for i in range(len(children)):
+            for j in range(i + 1, len(children)):
+                a, b = children[i], children[j]
                 first_degree[a].add(b)
                 first_degree[b].add(a)
                 key = tuple(sorted([a, b]))
@@ -506,6 +527,54 @@ def _compute_relatedness_distance(
     n_parent_child = sum(1 for r in pair_type.values() if r == "parent-child")
     n_sibling      = sum(1 for r in pair_type.values() if r == "sibling")
 
+    # --- Family size breakdown (for spot-checking) ---------------------------
+    # Group individuals into connected family units via Union-Find.
+    _uf: dict[str, str] = {}
+
+    def _find(x: str) -> str:
+        while _uf.get(x, x) != x:
+            _uf[x] = _uf.get(_uf.get(x, x), _uf.get(x, x))
+            x = _uf.get(x, x)
+        return x
+
+    for ind in all_individuals_with_relatives:
+        _uf.setdefault(ind, ind)
+    for a, b in pair_type:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            _uf[rb] = ra
+
+    family_members: dict[str, set[str]] = {}
+    for ind in all_individuals_with_relatives:
+        root = _find(ind)
+        family_members.setdefault(root, set()).add(ind)
+
+    from collections import Counter as _Counter
+    size_counter = _Counter(len(m) for m in family_members.values())
+    family_breakdown = []
+    for size in sorted(size_counter.keys()):
+        n_fam = size_counter[size]
+        n_ind = n_fam * size
+        # Pairs belonging to families of this size
+        fam_sets = [m for m in family_members.values() if len(m) == size]
+        n_pc_sz = sum(
+            sum(1 for (a, b), t in pair_type.items()
+                if t == "parent-child" and a in fam and b in fam)
+            for fam in fam_sets
+        )
+        n_sib_sz = sum(
+            sum(1 for (a, b), t in pair_type.items()
+                if t == "sibling" and a in fam and b in fam)
+            for fam in fam_sets
+        )
+        family_breakdown.append({
+            "family_size": size,
+            "n_families": n_fam,
+            "n_individuals": n_ind,
+            "n_parent_child": n_pc_sz,
+            "n_sibling": n_sib_sz,
+        })
+
     try:
         stat, p_value = wilcoxon(d_nearest_rel, d_nearest_ns, alternative="two-sided")
         stat = float(stat)
@@ -522,6 +591,7 @@ def _compute_relatedness_distance(
         "mp_pcs_used": len(pc_cols),
         "d_nearest_relative_values": d_nearest_rel.tolist(),
         "d_nearest_nonself_values": d_nearest_ns.tolist(),
+        "family_breakdown": family_breakdown,
     }
 
 
@@ -1311,7 +1381,8 @@ def _build_html(
         <h3>Method</h3>
         <p>
           We parse the 1000 Genomes pedigree file to identify all first-degree relative pairs
-          (parent–child from Paternal/Maternal ID columns, and siblings sharing a family ID) that
+          (parent–child from Paternal/Maternal ID columns, and siblings from the
+          pedigree Siblings column and shared-parent detection) that
           are both present in the NGS-PCA dataset. For each individual <em>i</em> with at least one
           relative in the dataset:
         </p>
@@ -1335,6 +1406,7 @@ def _build_html(
         </p>
         <h3>Results</h3>
         <p id="relatedness-summary"></p>
+        <div id="relatedness-family-table"></div>
       </div>
       <div class="grid-2">
         <div class="plot-card">
@@ -2264,6 +2336,44 @@ def _build_html(
                + 'than the nearest non-self neighbour, '
                + 'suggesting some residual familial signal may be present in the NGS-PCA space.'
            : '');
+
+      /* Family breakdown table */
+      if (rd.family_breakdown && rd.family_breakdown.length > 0) {
+        var totalFam = 0, totalInd = 0, totalPC = 0, totalSib = 0;
+        var rows = rd.family_breakdown.map(function(r) {
+          totalFam += r.n_families;
+          totalInd += r.n_individuals;
+          totalPC  += r.n_parent_child;
+          totalSib += r.n_sibling;
+          return '<tr>'
+            + '<td class="num">' + r.family_size + '</td>'
+            + '<td class="num">' + r.n_families + '</td>'
+            + '<td class="num">' + r.n_individuals + '</td>'
+            + '<td class="num">' + r.n_parent_child + '</td>'
+            + '<td class="num">' + r.n_sibling + '</td>'
+            + '</tr>';
+        });
+        rows.push('<tr style="font-weight:600;border-top:2px solid var(--border)">'
+          + '<td>Total</td>'
+          + '<td class="num">' + totalFam + '</td>'
+          + '<td class="num">' + totalInd + '</td>'
+          + '<td class="num">' + totalPC  + '</td>'
+          + '<td class="num">' + totalSib + '</td>'
+          + '</tr>');
+        document.getElementById('relatedness-family-table').innerHTML =
+          '<p style="margin-top:0.75rem;margin-bottom:0.4rem;font-size:0.85rem;color:var(--text-dim)">'
+          + '<strong>Family structure breakdown</strong> — each row is one connected family unit '
+          + '(child+parents, or sibling group); sizes >3 indicate multi-child or extended families.</p>'
+          + '<table class="summary-table" style="width:auto;min-width:420px">'
+          + '<thead><tr>'
+          + '<th>Family size</th><th class="num"># Families</th>'
+          + '<th class="num"># Individuals</th>'
+          + '<th class="num">Parent\u2013child pairs</th>'
+          + '<th class="num">Sibling pairs</th>'
+          + '</tr></thead>'
+          + '<tbody>' + rows.join('') + '</tbody>'
+          + '</table>';
+      }
 
       /* Violin / box plot */
       var traceRel = {
