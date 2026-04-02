@@ -1,0 +1,45 @@
+name: Publish Report
+
+# Rebuild and publish the interactive HTML report on every push to main.
+# Uses the full sample set (no subset) and publication-grade permutations.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to push updated docs/index.html
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full analysis pipeline
+        env:
+          NGSPCA_DATA_DIR: 1000G
+          NGSPCA_OUTPUT_DIR: output
+          # Full cohort: no NGSPCA_SUBSET (defaults to 0 = all samples)
+          NGSPCA_PERMUTATIONS: "1000"
+        run: bash run_all.sh
+
+      - name: Commit and push updated report
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          # Only commit if there are changes
+          git diff --cached --quiet || \
+            git commit -m "chore: rebuild interactive report [skip ci]" && \
+            git push

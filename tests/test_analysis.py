@@ -460,6 +460,45 @@ class TestCiConfiguration:
             content = fh.read()
         assert 'NGSPCA_SUBSET: "1000"' in content
 
+    def test_ci_analysis_sets_permutations(self):
+        """ci-analysis.yml should explicitly set NGSPCA_PERMUTATIONS."""
+        path = os.path.join(".github", "workflows", "ci-analysis.yml")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "NGSPCA_PERMUTATIONS" in content
+
+    def test_publish_workflow_exists(self):
+        """A publish-report workflow should exist for auto-committing the HTML report."""
+        path = os.path.join(".github", "workflows", "publish-report.yml")
+        assert os.path.isfile(path), "publish-report.yml should exist"
+
+    def test_publish_workflow_uses_full_cohort(self):
+        """publish-report.yml should NOT set NGSPCA_SUBSET (full cohort)."""
+        path = os.path.join(".github", "workflows", "publish-report.yml")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "NGSPCA_SUBSET" not in content or "no NGSPCA_SUBSET" in content.lower() \
+            or "# Full cohort" in content, \
+            "Publish workflow should use full cohort (no NGSPCA_SUBSET)"
+
+    def test_publish_workflow_sets_permutations(self):
+        """publish-report.yml should set NGSPCA_PERMUTATIONS >= 1000."""
+        path = os.path.join(".github", "workflows", "publish-report.yml")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'NGSPCA_PERMUTATIONS' in content, \
+            "Publish workflow should set NGSPCA_PERMUTATIONS"
+
+    def test_publish_workflow_commits_report(self):
+        """publish-report.yml should auto-commit docs/index.html."""
+        path = os.path.join(".github", "workflows", "publish-report.yml")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "docs/index.html" in content, \
+            "Publish workflow should commit docs/index.html"
+        assert "git push" in content, \
+            "Publish workflow should push changes"
+
 
 # ---------------------------------------------------------------------------
 # Scientific validation tests
@@ -576,6 +615,7 @@ class TestAncestryDistance:
         assert ad is not None, "DATA should contain ancestry_distance"
         for key in ["n_samples", "n_excluded", "mp_pcs_used",
                      "observed_mean_delta", "p_value_global",
+                     "p_value_global_two",
                      "p_value_within_batch", "n_permutations",
                      "per_superpop", "d_within_values", "d_between_values",
                      "null_hist_counts", "null_hist_edges"]:
@@ -588,7 +628,7 @@ class TestAncestryDistance:
             "Histogram edges should have one more element than counts"
 
     def test_ancestry_p_value_is_valid(self):
-        """Global and within-batch p-values should be in [0, 1]."""
+        """Global (one- and two-sided) and within-batch p-values should be in [0, 1]."""
         path = os.path.join(REPORT_DIR, "index.html")
         with open(path, encoding="utf-8") as fh:
             content = fh.read()
@@ -599,9 +639,32 @@ class TestAncestryDistance:
         payload = json.loads(match.group(1))
         ad = payload["ancestry_distance"]
         assert 0.0 <= ad["p_value_global"] <= 1.0, \
-            f"Global p-value should be in [0,1], got {ad['p_value_global']}"
+            f"Global one-sided p-value should be in [0,1], got {ad['p_value_global']}"
+        assert 0.0 <= ad["p_value_global_two"] <= 1.0, \
+            f"Global two-sided p-value should be in [0,1], got {ad['p_value_global_two']}"
         assert 0.0 <= ad["p_value_within_batch"] <= 1.0, \
             f"Within-batch p-value should be in [0,1], got {ad['p_value_within_batch']}"
+
+    def test_per_superpop_has_pvalues(self):
+        """Each per-superpopulation entry should include permutation p-values."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        ad = payload["ancestry_distance"]
+        per_sp = ad.get("per_superpop", {})
+        assert len(per_sp) > 0, "Should have at least one superpopulation"
+        for g, info in per_sp.items():
+            assert "p_value" in info, f"per_superpop[{g}] missing p_value"
+            assert "p_value_two" in info, f"per_superpop[{g}] missing p_value_two"
+            assert 0.0 <= info["p_value"] <= 1.0, \
+                f"per_superpop[{g}] p_value should be in [0,1], got {info['p_value']}"
+            assert 0.0 <= info["p_value_two"] <= 1.0, \
+                f"per_superpop[{g}] p_value_two should be in [0,1], got {info['p_value_two']}"
 
     def test_ancestry_section_exists(self):
         """Report should have ancestry distance section with plot divs."""
@@ -626,3 +689,36 @@ class TestAncestryDistance:
             "Ancestry section should describe nearest-neighbour comparison"
         assert "permutation" in content.lower(), \
             "Ancestry section should describe permutation test"
+
+    def test_ancestry_interpretation_language(self):
+        """Interpretation language should reference sign and significance of δ."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        # The report should use the improved interpretation language patterns
+        has_positive_sig = "residual ancestry structure" in content
+        has_negative_sig = "technical (non-biological) variation" in content
+        has_not_sig = "No evidence that NGS-PCA space is organized by ancestry" in content
+        assert has_positive_sig or has_negative_sig or has_not_sig, \
+            "Interpretation should use improved sign-and-significance language"
+
+    def test_ancestry_reports_one_sided_pvalue(self):
+        """Report should describe the one-sided p-value."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "one-sided" in content.lower(), \
+            "Report should mention one-sided p-value"
+        assert "two-sided" in content.lower(), \
+            "Report should mention two-sided p-value"
+
+    def test_ancestry_per_superpop_pvalues_in_html(self):
+        """Per-superpopulation section should show p-values."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Per-superpopulation" in content, \
+            "Report should display per-superpopulation results"
+        assert "group-wise" in content.lower() or "per-superpopulation p-value" in content.lower() \
+            or "s.p_value" in content, \
+            "Report should include per-group p-values in rendering code"

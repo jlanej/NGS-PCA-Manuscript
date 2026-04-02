@@ -597,12 +597,14 @@ def _compute_ancestry_distance(
 
     delta = d_between[valid] - d_within[valid]
 
-    # --- Per-superpopulation summaries ---------------------------------------
+    # --- Per-superpopulation observed summaries --------------------------------
     per_superpop: dict = {}
+    active_groups = []
     for g in unique_labels:
         g_idx = (superpop == g) & valid
         if not np.any(g_idx):
             continue
+        active_groups.append(g)
         per_superpop[g] = {
             "median_d_within": float(np.median(d_within[g_idx])),
             "median_d_between": float(np.median(d_between[g_idx])),
@@ -610,19 +612,56 @@ def _compute_ancestry_distance(
             "n": int(np.sum(g_idx)),
         }
 
+    # --- Helper: per-group median delta from d_within/d_between arrays -------
+    def _per_group_median_deltas(labels, dw, db, vmask):
+        """Return dict mapping group label -> median(d_between - d_within)."""
+        out = {}
+        for g in active_groups:
+            g_idx = (labels == g) & vmask
+            if not np.any(g_idx):
+                out[g] = 0.0
+                continue
+            out[g] = float(np.median(db[g_idx] - dw[g_idx]))
+        return out
+
+    observed_group_deltas = _per_group_median_deltas(superpop, d_within,
+                                                      d_between, valid)
+
     # --- Independent RNG streams for the two permutation tests ---------------
     rng = np.random.default_rng(seed)
     rng_global, rng_wb = rng.spawn(2)
 
-    # --- Step 3: Global permutation test -------------------------------------
+    # --- Step 3: Global permutation test (also collects per-group nulls) -----
     null_deltas = np.empty(n_permutations)
+    null_group_deltas: dict[str, list[float]] = {g: [] for g in active_groups}
     for p in range(n_permutations):
         shuffled = rng_global.permutation(superpop)
-        null_deltas[p] = compute_mean_delta(shuffled)[0]
+        mean_d, dw_p, db_p, v_p = compute_mean_delta(shuffled)
+        null_deltas[p] = mean_d
+        grp_deltas = _per_group_median_deltas(shuffled, dw_p, db_p, v_p)
+        for g in active_groups:
+            null_group_deltas[g].append(grp_deltas[g])
 
     p_value_global = float(
         (np.sum(null_deltas >= observed_mean_delta) + 1) / (n_permutations + 1)
     )
+
+    # Two-sided global p-value
+    p_value_global_two = float(
+        (np.sum(np.abs(null_deltas) >= abs(observed_mean_delta)) + 1)
+        / (n_permutations + 1)
+    )
+
+    # --- Per-superpopulation permutation p-values ----------------------------
+    for g in active_groups:
+        null_arr = np.asarray(null_group_deltas[g])
+        obs_g = observed_group_deltas[g]
+        per_superpop[g]["p_value"] = float(
+            (np.sum(null_arr >= obs_g) + 1) / (n_permutations + 1)
+        )
+        per_superpop[g]["p_value_two"] = float(
+            (np.sum(np.abs(null_arr) >= abs(obs_g)) + 1) / (n_permutations + 1)
+        )
 
     # --- Step 4: Within-batch permutation (always run for transparency) ------
     null_deltas_wb = np.empty(n_permutations)
@@ -647,6 +686,7 @@ def _compute_ancestry_distance(
         "mp_pcs_used": len(pc_cols),
         "observed_mean_delta": float(observed_mean_delta),
         "p_value_global": p_value_global,
+        "p_value_global_two": p_value_global_two,
         "p_value_within_batch": p_value_within_batch,
         "n_permutations": n_permutations,
         "per_superpop": per_superpop,
@@ -1327,9 +1367,17 @@ def _build_html(
         <p>
           <strong>Global permutation test:</strong> superpopulation labels are shuffled uniformly
           across all samples and mean δ is recomputed.  This is repeated <em>N</em> times to build
-          a null distribution.  The empirical <em>p</em>-value uses the Phipson &amp; Smyth (2010)
-          conservative correction:
-          <code>p = (# permutations where δ<sub>perm</sub> ≥ δ<sub>obs</sub> + 1) / (N + 1)</code>.
+          a null distribution.  The primary <em>p</em>-value is <strong>one-sided (right tail)</strong>,
+          testing whether δ &gt; 0 (i.e., same-ancestry individuals are closer):
+          <code>p = (# permutations where δ<sub>perm</sub> ≥ δ<sub>obs</sub> + 1) / (N + 1)</code>
+          (Phipson &amp; Smyth, 2010).  A two-sided <em>p</em>-value is also reported for
+          completeness.
+        </p>
+        <p>
+          <strong>Per-superpopulation p-values:</strong> for each ancestry group, the observed
+          median δ is compared to its null distribution under label shuffling to yield a
+          group-wise permutation <em>p</em>-value.  This reveals whether specific groups drive the
+          global signal.
         </p>
         <p>
           <strong>Within-batch permutation (diagnostic):</strong> if the global test is significant,
@@ -2309,35 +2357,41 @@ def _build_html(
       var pGlobal = ad.p_value_global;
       var pBatch  = ad.p_value_within_batch;
       var delta   = ad.observed_mean_delta;
+      var pGlobalTwo = ad.p_value_global_two;
 
-      /* Build interpretation text */
+      /* Build interpretation text: consider both sign and significance of δ */
       var interp = '';
       if (pGlobal >= 0.05) {
-        interp = 'The global test does <strong>not</strong> reject the null hypothesis \u2014 '
-          + 'same-ancestry individuals are not systematically closer together than different-ancestry '
-          + 'individuals in NGS-PCA space. This is the strongest evidence that NGS-PCA does not '
-          + 'group by genetic ancestry.';
-      } else if (pGlobal < 0.05 && pBatch != null && pBatch >= 0.05) {
-        interp = 'The global test is significant (<em>p</em> = ' + fmtP(pGlobal) + '), but the '
-          + 'within-batch permutation is <strong>not</strong> significant (<em>p</em> = '
-          + fmtP(pBatch) + '). The apparent ancestry signal is <strong>explained by '
-          + 'batch\u2013ancestry confounding</strong> \u2014 once batch structure is held constant, '
-          + 'ancestry labels no longer predict proximity in NGS-PCA space.';
-      } else if (pGlobal < 0.05 && pBatch != null && pBatch < 0.05) {
-        interp = 'Both the global test (<em>p</em> = ' + fmtP(pGlobal) + ') and the within-batch '
-          + 'permutation (<em>p</em> = ' + fmtP(pBatch) + ') are significant, suggesting '
-          + '<strong>genuine residual ancestry structure</strong> in NGS-PCA space beyond batch '
-          + 'confounding. Effect size and practical relevance should be compared to the batch \u03b7\u00b2 '
-          + 'and relatedness distance results.';
+        interp = 'No evidence that NGS-PCA space is organized by ancestry '
+          + '(\u03b4 ' + (delta >= 0 ? '> ' : '< ') + '0, one-sided <em>p</em> = ' + fmtP(pGlobal) + ', n.s.).';
+      } else if (delta > 0 && pGlobal < 0.05) {
+        if (pBatch != null && pBatch >= 0.05) {
+          interp = 'Same-ancestry individuals are systematically closer in NGS-PCA space '
+            + '(one-sided <em>p</em> = ' + fmtP(pGlobal) + '), but this signal is '
+            + '<strong>explained by batch\u2013ancestry confounding</strong> '
+            + '(within-batch <em>p</em> = ' + fmtP(pBatch) + ', n.s.).';
+        } else {
+          interp = 'Same-ancestry individuals are systematically closer in NGS-PCA space; '
+            + 'this indicates some <strong>residual ancestry structure</strong> '
+            + '(one-sided <em>p</em> = ' + fmtP(pGlobal) + '; within-batch <em>p</em> = '
+            + fmtP(pBatch) + '). Effect size and practical relevance should be compared to '
+            + 'the batch \u03b7\u00b2 and relatedness distance results.';
+        }
+      } else if (delta < 0 && pGlobal < 0.05) {
+        interp = 'Same-ancestry individuals are <strong>not</strong> clustered; '
+          + 'significant negative \u03b4 is consistent with NGS-PCA capturing '
+          + '<strong>technical (non-biological) variation</strong> '
+          + '(two-sided <em>p</em> = ' + fmtP(pGlobalTwo) + ').';
       }
 
-      /* Per-superpopulation breakdown */
+      /* Per-superpopulation breakdown with permutation p-values */
       var spParts = [];
       if (ad.per_superpop) {
         var groups = Object.keys(ad.per_superpop).sort();
         groups.forEach(function(g) {
           var s = ad.per_superpop[g];
-          spParts.push(g + ' (n=' + s.n + ', median \u03b4=' + s.median_delta.toFixed(3) + ')');
+          var pStr = s.p_value != null ? ', <em>p</em>=' + fmtP(s.p_value) + sigTag(s.p_value) : '';
+          spParts.push(g + ' (n=' + s.n + ', median \u03b4=' + s.median_delta.toFixed(3) + pStr + ')');
         });
       }
 
@@ -2349,11 +2403,13 @@ def _build_html(
         + delta.toFixed(4) + '</strong> '
         + '(' + (delta > 0 ? 'same-ancestry individuals are closer' : 'same-ancestry individuals are not closer') + '). '
         + '<br><strong>Global permutation test</strong> (' + ad.n_permutations + ' permutations): '
-        + '<em>p</em> = ' + fmtP(pGlobal) + sigTag(pGlobal) + '. '
+        + 'one-sided <em>p</em> = ' + fmtP(pGlobal) + sigTag(pGlobal)
+        + (pGlobalTwo != null ? '; two-sided <em>p</em> = ' + fmtP(pGlobalTwo) + sigTag(pGlobalTwo) : '')
+        + '. '
         + '<br><strong>Within-batch permutation</strong>: '
         + '<em>p</em> = ' + fmtP(pBatch) + sigTag(pBatch) + '. '
         + '<br>' + interp
-        + (spParts.length > 0 ? '<br><em>Per-superpopulation:</em> ' + spParts.join('; ') + '.' : '');
+        + (spParts.length > 0 ? '<br><em>Per-superpopulation (one-sided <em>p</em>):</em> ' + spParts.join('; ') + '.' : '');
 
       /* --- Figure A: Violin / box plot ---------------------------------- */
       var traceWithin = {
