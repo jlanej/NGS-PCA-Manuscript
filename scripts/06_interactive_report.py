@@ -378,12 +378,19 @@ def _compute_relatedness_distance(
 ):
     """Compute pedigree-based relatedness distances in NGS-PCA space.
 
-    For every pair of first-degree relatives (parent–child and siblings)
-    present in both the pedigree and the NGS-PCA data, compute the Euclidean
-    distance between them in the top *k* PCs (Marchenko–Pastur selected) and
-    compare to the nearest non-relative anywhere in the dataset.
+    For every individual with at least one first-degree relative (parent–child
+    or sibling) present in the NGS-PCA data, compute:
+      * d_nearest_relative  — distance to the closest known relative
+      * d_nearest_nonself   — distance to the closest other sample in the
+                              dataset, regardless of relation (may itself be
+                              a relative)
 
-    Returns a dict with the comparison table, Wilcoxon test results, and
+    The Wilcoxon signed-rank test asks whether the nearest relative is
+    systematically closer or farther than the nearest non-self neighbour.
+    If NGS-PCA does not cluster by familial relatedness, non-relatives will
+    tend to be closer (d_nearest_nonself < d_nearest_relative).
+
+    Returns a dict with the comparison arrays, Wilcoxon test results, and
     summary counts.
     """
     from scipy.stats import wilcoxon
@@ -449,70 +456,72 @@ def _compute_relatedness_distance(
     sample_list = df_idx.index.values   # aligned with pc_matrix rows
     sample_to_idx = {s: i for i, s in enumerate(sample_list)}
 
-    # --- Compute distances ---------------------------------------------------
+    # --- Compute per-individual distances ------------------------------------
+    # For each individual with at least one relative in the dataset, compute:
+    #   d_nearest_relative : distance to the closest known relative
+    #   d_nearest_nonself  : distance to the closest sample that is not self
+    #                        (the nearest non-self neighbour, which may itself
+    #                        be a relative)
+    all_individuals_with_relatives = set(first_degree.keys()) & set(sample_to_idx.keys())
+
     records = []
-    seen = set()
-    for (a, b), rtype in pair_type.items():
-        if a not in sample_to_idx or b not in sample_to_idx:
+    for i_sample in sorted(all_individuals_with_relatives):
+        idx_i = sample_to_idx[i_sample]
+        vec_i = pc_matrix[idx_i]
+
+        # Relatives of i that are present in the dataset
+        relatives_of_i = [sample_to_idx[r] for r in first_degree[i_sample]
+                          if r in sample_to_idx]
+        if not relatives_of_i:
             continue
-        for i_sample, j_sample in [(a, b), (b, a)]:
-            if (i_sample, j_sample) in seen:
-                continue
-            seen.add((i_sample, j_sample))
 
-            idx_i = sample_to_idx[i_sample]
-            idx_j = sample_to_idx[j_sample]
-            vec_i = pc_matrix[idx_i]
-            vec_j = pc_matrix[idx_j]
-            d_ij = float(np.sqrt(np.sum((vec_i - vec_j) ** 2)))
+        # Distance to nearest relative
+        rel_dists = np.sqrt(np.sum((pc_matrix[relatives_of_i] - vec_i) ** 2, axis=1))
+        d_nearest_relative = float(np.min(rel_dists))
 
-            # Nearest non-relative anywhere in the dataset (vectorized)
-            relatives_of_i = first_degree.get(i_sample, set())
-            exclude_idx = {idx_i} | {sample_to_idx[r] for r in relatives_of_i
-                                     if r in sample_to_idx}
-            diffs = pc_matrix - vec_i          # (n_samples, k)
-            dists = np.sqrt(np.sum(diffs ** 2, axis=1))   # (n_samples,)
-            dists[list(exclude_idx)] = np.inf
-            d_nearest = float(np.min(dists))
+        # Distance to nearest non-self (any sample != i, including relatives)
+        diffs = pc_matrix - vec_i          # (n_samples, k)
+        dists = np.sqrt(np.sum(diffs ** 2, axis=1))   # (n_samples,)
+        dists[idx_i] = np.inf              # exclude self
+        d_nearest_nonself = float(np.min(dists))
 
-            if not np.isfinite(d_nearest):
-                continue  # no non-relative found (should never happen)
+        if not np.isfinite(d_nearest_nonself):
+            continue  # should never happen with >1 sample
 
-            records.append({
-                "individual": i_sample,
-                "relative": j_sample,
-                "d_relative": d_ij,
-                "d_nearest_nonrelative": d_nearest,
-                "relation_type": rtype,
-            })
+        records.append({
+            "individual": i_sample,
+            "d_nearest_relative": d_nearest_relative,
+            "d_nearest_nonself": d_nearest_nonself,
+        })
 
     if not records:
         return None
 
     # --- Statistical test ----------------------------------------------------
-    d_rel = np.array([r["d_relative"] for r in records])
-    d_nrel = np.array([r["d_nearest_nonrelative"] for r in records])
+    d_nearest_rel = np.array([r["d_nearest_relative"] for r in records])
+    d_nearest_ns  = np.array([r["d_nearest_nonself"]   for r in records])
 
-    n_pairs = len(records)
-    n_parent_child = sum(1 for r in records if r["relation_type"] == "parent-child")
-    n_sibling = sum(1 for r in records if r["relation_type"] == "sibling")
+    n_individuals = len(records)
+    # Count unique pedigree pairs (for reporting context only)
+    n_parent_child = sum(1 for r in pair_type.values() if r == "parent-child")
+    n_sibling      = sum(1 for r in pair_type.values() if r == "sibling")
 
     try:
-        stat, p_value = wilcoxon(d_rel, d_nrel, alternative="two-sided")
+        stat, p_value = wilcoxon(d_nearest_rel, d_nearest_ns, alternative="two-sided")
         stat = float(stat)
         p_value = float(p_value)
     except Exception:
         stat, p_value = None, None
 
     return {
-        "n_pairs": n_pairs,
+        "n_individuals": n_individuals,
         "n_parent_child": n_parent_child,
         "n_sibling": n_sibling,
         "wilcoxon_stat": stat,
         "wilcoxon_p": p_value,
         "mp_pcs_used": len(pc_cols),
-        "d_relative_values": d_rel.tolist(),
-        "d_nonrelative_values": d_nrel.tolist(),
+        "d_nearest_relative_values": d_nearest_rel.tolist(),
+        "d_nearest_nonself_values": d_nearest_ns.tolist(),
     }
 
 
@@ -1296,37 +1305,40 @@ def _build_html(
           A key validation for NGS-PCA is that it captures <strong>technical</strong> rather than
           <strong>biological (familial)</strong> variation. In genotype-based PCA, closely related
           individuals (parent–child, siblings) cluster tightly because they share large fractions of
-          their genome. If NGS-PCA instead captures coverage-level technical variation, the distance
-          between relatives in PC space should be comparable to the distance between unrelated
-          individuals from the same population and sequencing batch.
+          their genome. If NGS-PCA instead captures coverage-level technical variation, relatives
+          should be no closer to one another than any other randomly nearby individual in PC space.
         </p>
         <h3>Method</h3>
         <p>
           We parse the 1000 Genomes pedigree file to identify all first-degree relative pairs
           (parent–child from Paternal/Maternal ID columns, and siblings sharing a family ID) that
-          are both present in the NGS-PCA dataset. For each directed pair (<em>i</em>, <em>j</em>):
+          are both present in the NGS-PCA dataset. For each individual <em>i</em> with at least one
+          relative in the dataset:
         </p>
         <ul>
-          <li>Compute the Euclidean distance <em>d(i, j)</em> in the top <em>k</em> PCs selected
-              by the Marchenko–Pastur cutoff.</li>
-          <li>Compute the minimum Euclidean distance from <em>i</em> to any non-relative
-              anywhere in the dataset: <em>d(i, nearest non-relative)</em>.</li>
-          <li>Counts are <strong>directed</strong>: each undirected relative pair contributes
-              both (<em>i</em>, <em>j</em>) and (<em>j</em>, <em>i</em>).</li>
+          <li>Compute <em>d</em>(i, nearest relative): the minimum Euclidean distance from
+              <em>i</em> to any known first-degree relative, in the top <em>k</em>
+              Marchenko–Pastur-selected PCs.</li>
+          <li>Compute <em>d</em>(i, nearest non-self): the minimum Euclidean distance from
+              <em>i</em> to <em>any</em> other sample in the dataset — this nearest non-self
+              neighbour may itself be a relative.</li>
         </ul>
         <p>
-          A paired <strong>Wilcoxon signed-rank test</strong> compares the two distance distributions.
-          Under the null hypothesis that NGS-PCA does not recapitulate familial relatedness, the distances
-          between relatives should not be systematically smaller than those to the nearest unrelated
-          neighbour. Failure to reject (large <em>p</em>-value) supports the interpretation that
-          NGS-PCA primarily reflects technical rather than biological signal.
+          A paired <strong>Wilcoxon signed-rank test</strong> compares the two distance distributions
+          across all individuals with relatives. The key question is whether relatives are closer
+          than the overall nearest neighbour. If NGS-PCA does not recapitulate familial relatedness,
+          we expect <em>d</em>(nearest non-self) &lt; <em>d</em>(nearest relative) for most
+          individuals — i.e., non-relatives tend to be closer than relatives. Failure of relatives
+          to cluster (large <em>p</em>-value, or significant result showing non-relatives are
+          closer) supports the interpretation that NGS-PCA primarily reflects technical rather than
+          biological signal.
         </p>
         <h3>Results</h3>
         <p id="relatedness-summary"></p>
       </div>
       <div class="grid-2">
         <div class="plot-card">
-          <div class="plot-card-header"><h3>Related vs. Nearest Unrelated Distance</h3></div>
+          <div class="plot-card-header"><h3>Nearest Relative vs. Nearest Non-self Distance</h3></div>
           <div class="plot-card-body"><div id="relatedness-violin" style="height:500px"></div></div>
         </div>
         <div class="plot-card">
@@ -2206,7 +2218,7 @@ def _build_html(
     /* ------------------------------------------------------------------ */
     (function() {
       var rd = DATA.relatedness_distance;
-      if (!rd || !rd.d_relative_values || rd.d_relative_values.length === 0) {
+      if (!rd || !rd.d_nearest_relative_values || rd.d_nearest_relative_values.length === 0) {
         document.getElementById('relatedness-summary').textContent =
           'No first-degree relative pairs found in both the pedigree and NGS-PCA data.';
         return;
@@ -2223,38 +2235,40 @@ def _build_html(
            : rd.wilcoxon_p < 0.05 ? ' (*)'
            : ' (n.s.)')
         : '';
-      /* Compute direction: are relatives closer or farther? */
+      /* Compute direction: are relatives closer or farther than nearest non-self? */
       var sumDiff = 0;
-      for (var k = 0; k < rd.d_relative_values.length; k++) {
-        sumDiff += rd.d_relative_values[k] - rd.d_nonrelative_values[k];
+      for (var k = 0; k < rd.d_nearest_relative_values.length; k++) {
+        sumDiff += rd.d_nearest_relative_values[k] - rd.d_nearest_nonself_values[k];
       }
+      /* relFarther = true means nearest relative is on average FARTHER than nearest non-self */
       var relFarther = sumDiff > 0;
 
       document.getElementById('relatedness-summary').innerHTML =
-        '<strong>' + rd.n_pairs + '</strong> directed relative pairs analysed '
-        + '(' + rd.n_parent_child + ' parent\u2013child, ' + rd.n_sibling + ' sibling; '
-        + 'each undirected pair counted twice) '
+        '<strong>' + rd.n_individuals + '</strong> individuals with first-degree relatives analysed '
+        + '(' + rd.n_parent_child + ' parent\u2013child pairs, ' + rd.n_sibling + ' sibling pairs in pedigree) '
         + 'using the top <strong>' + rd.mp_pcs_used + '</strong> Marchenko\u2013Pastur-selected PCs. '
         + 'Paired Wilcoxon signed-rank test: <em>W</em>\u2009=\u2009' + statTxt
         + ', <em>p</em>\u2009=\u2009' + pTxt + sigTxt + '. '
         + (rd.wilcoxon_p != null && rd.wilcoxon_p >= 0.05
-           ? 'The test does <strong>not</strong> reject the null hypothesis \u2014 distances between '
-             + 'relatives are not systematically different from those to the nearest unrelated neighbour, '
+           ? 'The test does <strong>not</strong> reject the null hypothesis \u2014 the nearest '
+             + 'relative is not systematically closer than the nearest non-self neighbour, '
              + 'consistent with NGS-PCA capturing technical rather than familial variation.'
            : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && relFarther
-             ? 'The test is significant, but relatives are on average <strong>farther</strong> apart '
-               + 'than the nearest unrelated neighbour anywhere in the dataset. '
-               + 'This is consistent with NGS-PCA capturing technical rather than familial variation: '
+             ? 'The test is significant: the nearest non-self neighbour is on average '
+               + '<strong>closer</strong> than the nearest relative. '
+               + 'This indicates that non-relatives tend to be nearer in NGS-PCA space, '
+               + 'consistent with NGS-PCA capturing technical rather than familial variation: '
                + 'genotype PCA would pull relatives <em>closer</em>, whereas NGS-PCA shows no such clustering.'
            : rd.wilcoxon_p != null && rd.wilcoxon_p < 0.05 && !relFarther
-             ? 'The test is significant and relatives are on average <strong>closer</strong>, '
+             ? 'The test is significant and the nearest relative is on average <strong>closer</strong> '
+               + 'than the nearest non-self neighbour, '
                + 'suggesting some residual familial signal may be present in the NGS-PCA space.'
            : '');
 
       /* Violin / box plot */
       var traceRel = {
-        y: rd.d_relative_values,
-        type: 'violin', name: 'Related',
+        y: rd.d_nearest_relative_values,
+        type: 'violin', name: 'Nearest relative',
         box: {visible: true},
         meanline: {visible: true},
         marker: {color: '#E41A1C'},
@@ -2268,8 +2282,8 @@ def _build_html(
         marker: {color: '#E41A1C', size: 3, opacity: 0.5},
       };
       var traceNrel = {
-        y: rd.d_nonrelative_values,
-        type: 'violin', name: 'Nearest unrelated',
+        y: rd.d_nearest_nonself_values,
+        type: 'violin', name: 'Nearest non-self',
         box: {visible: true},
         meanline: {visible: true},
         marker: {color: '#377EB8'},
@@ -2297,11 +2311,11 @@ def _build_html(
       /* Paired dot plot */
       var xRel = [], xNrel = [], yRel = [], yNrel = [];
       var xLine = [], yLine = [];
-      for (var i = 0; i < rd.d_relative_values.length; i++) {
-        xRel.push(0); yRel.push(rd.d_relative_values[i]);
-        xNrel.push(1); yNrel.push(rd.d_nonrelative_values[i]);
+      for (var i = 0; i < rd.d_nearest_relative_values.length; i++) {
+        xRel.push(0); yRel.push(rd.d_nearest_relative_values[i]);
+        xNrel.push(1); yNrel.push(rd.d_nearest_nonself_values[i]);
         xLine.push(0, 1, null);
-        yLine.push(rd.d_relative_values[i], rd.d_nonrelative_values[i], null);
+        yLine.push(rd.d_nearest_relative_values[i], rd.d_nearest_nonself_values[i], null);
       }
       var traceLine = {
         x: xLine, y: yLine, mode: 'lines',
@@ -2309,22 +2323,22 @@ def _build_html(
         showlegend: false, hoverinfo: 'skip',
       };
       var traceRelDot = {
-        x: xRel, y: yRel, mode: 'markers', name: 'Related',
+        x: xRel, y: yRel, mode: 'markers', name: 'Nearest relative',
         marker: {color: '#E41A1C', size: 4, opacity: 0.4},
       };
       var traceNrelDot = {
-        x: xNrel, y: yNrel, mode: 'markers', name: 'Nearest unrelated',
+        x: xNrel, y: yNrel, mode: 'markers', name: 'Nearest non-self',
         marker: {color: '#377EB8', size: 4, opacity: 0.4},
       };
       Plotly.newPlot('relatedness-paired', [traceLine, traceRelDot, traceNrelDot], {
         ...LAYOUT_BASE,
         xaxis: {...LAYOUT_BASE.xaxis, tickvals: [0, 1],
-                ticktext: ['Related', 'Nearest unrelated'], range: [-0.5, 1.5]},
+                ticktext: ['Nearest relative', 'Nearest non-self'], range: [-0.5, 1.5]},
         yaxis: {...LAYOUT_BASE.yaxis, title: 'Euclidean distance (top ' + rd.mp_pcs_used + ' PCs)'},
         showlegend: false,
         annotations: [{
           x: 0.5, y: 1.08, xref: 'paper', yref: 'paper', showarrow: false,
-          text: rd.n_pairs + ' pairs \u2014 <i>p</i> = ' + pTxt + sigTxt,
+          text: rd.n_individuals + ' individuals \u2014 <i>p</i> = ' + pTxt + sigTxt,
           font: {size: 13}
         }],
       }, CFG);
