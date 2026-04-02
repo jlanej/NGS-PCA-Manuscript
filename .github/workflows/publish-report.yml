@@ -39,7 +39,6 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/index.html
-          # Only commit if there are changes
+          # Only commit and push if there are changes
           git diff --cached --quiet || \
-            git commit -m "chore: rebuild interactive report [skip ci]" && \
-            git push
+            (git commit -m "chore: rebuild interactive report [skip ci]" && git push)
