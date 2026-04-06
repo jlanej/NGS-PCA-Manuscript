@@ -58,6 +58,13 @@ def permutation_results():
     return pd.read_csv(path, sep="\t")
 
 
+@pytest.fixture(scope="module")
+def variance_partitioning():
+    path = os.path.join(OUTPUT_DIR, "variance_partitioning.tsv")
+    assert os.path.isfile(path), f"Variance partitioning TSV not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
 # ---------------------------------------------------------------------------
 # Merge & mapping tests
 # ---------------------------------------------------------------------------
@@ -106,6 +113,8 @@ EXPECTED_FILES = [
     "permutation_eta2_results.tsv",
     "permutation_eta2_batch.png",
     "permutation_eta2_nulldist.png",
+    "variance_partitioning.tsv",
+    "variance_partitioning.png",
 ]
 
 
@@ -728,3 +737,44 @@ class TestAncestryDistance:
         assert "group-wise" in content.lower() or "per-superpopulation p-value" in content.lower() \
             or "s.p_value" in content, \
             "Report should include per-group p-values in rendering code"
+
+
+# ---------------------------------------------------------------------------
+# Variance partitioning tests
+# ---------------------------------------------------------------------------
+class TestVariancePartitioning:
+    def test_has_expected_columns(self, variance_partitioning):
+        expected = {
+            "PC", "r2_full",
+            "unique_batch", "unique_ancestry", "unique_family_role", "unique_coverage",
+            "shared", "residual",
+        }
+        assert expected.issubset(set(variance_partitioning.columns))
+
+    def test_has_pc_rows(self, variance_partitioning):
+        assert len(variance_partitioning) > 0, "variance_partitioning.tsv should have at least one row"
+        assert variance_partitioning["PC"].str.startswith("PC").all()
+
+    def test_variance_components_nonnegative(self, variance_partitioning):
+        for col in ["unique_batch", "unique_ancestry", "unique_family_role",
+                    "unique_coverage", "shared", "residual"]:
+            assert (variance_partitioning[col] >= -1e-9).all(), \
+                f"{col} should be non-negative (got min {variance_partitioning[col].min():.6f})"
+
+    def test_r2_full_in_unit_interval(self, variance_partitioning):
+        assert (variance_partitioning["r2_full"] >= -1e-9).all()
+        assert (variance_partitioning["r2_full"] <= 1.0 + 1e-9).all()
+
+    def test_unique_components_at_most_r2_full(self, variance_partitioning):
+        """Each unique component cannot exceed the full-model R²."""
+        for col in ["unique_batch", "unique_ancestry", "unique_family_role", "unique_coverage"]:
+            assert (variance_partitioning[col] <= variance_partitioning["r2_full"] + 1e-9).all(), \
+                f"{col} should not exceed r2_full"
+
+    def test_unique_batch_nonzero_for_at_least_one_pc(self, variance_partitioning):
+        assert (variance_partitioning["unique_batch"] > 0).any(), \
+            "Unique batch variance should be > 0 for at least one PC"
+
+    def test_unique_ancestry_nonzero_for_at_least_one_pc(self, variance_partitioning):
+        assert (variance_partitioning["unique_ancestry"] > 0).any(), \
+            "Unique ancestry variance should be > 0 for at least one PC"
