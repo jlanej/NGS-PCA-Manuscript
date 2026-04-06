@@ -73,11 +73,18 @@ class TestMergeAndMapping:
         for col in ("RELEASE_BATCH", "INFERRED_SEX", "POPULATION"):
             assert col in merged.columns, f"Missing column {col}"
 
-    def test_superpopulation_mapped(self, merged):
+    def test_superpopulation_from_file(self, merged):
+        """SUPERPOPULATION should come directly from sample_qc.tsv (no remapping)."""
         assert "SUPERPOPULATION" in merged.columns
         valid = merged["SUPERPOPULATION"].dropna().unique()
         expected = {"AFR", "AMR", "EAS", "EUR", "SAS"}
         assert set(valid).issubset(expected), f"Unexpected superpop values: {set(valid) - expected}"
+
+    def test_family_role_from_file(self, merged):
+        """FAMILY_ROLE should come directly from sample_qc.tsv (not derived from SUPERPOPULATION)."""
+        assert "FAMILY_ROLE" in merged.columns, "FAMILY_ROLE column must be present in merged output"
+        # Values should include at least 'unrel' for unrelated samples
+        assert merged["FAMILY_ROLE"].notna().any(), "FAMILY_ROLE should have non-null values"
 
     def test_no_duplicate_samples(self, merged):
         assert merged["SAMPLE"].is_unique
