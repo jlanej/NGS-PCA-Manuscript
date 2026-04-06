@@ -289,76 +289,23 @@ def _compute_sample_summary(df: pd.DataFrame):
     }
 
 
-def _ols_r2(X: np.ndarray, y: np.ndarray) -> float:
-    """Compute R² for OLS regression of *y* on *X* (no intercept in X).
+def _load_variance_partitioning(output_dir: str):
+    """Load variance partitioning results from the TSV produced by 08_variance_partitioning.py.
 
-    An intercept column is added automatically.
+    Returns a list of row dicts (one per PC) or None if the file is absent.
     """
-    n = X.shape[0]
-    X_int = np.column_stack([np.ones(n), X])
-    try:
-        beta, _, _, _ = np.linalg.lstsq(X_int, y, rcond=None)
-        y_hat = X_int @ beta  # requires Python ≥3.5 / NumPy ≥1.10
-        ss_res = np.sum((y - y_hat) ** 2)
-        ss_tot = np.sum((y - y.mean()) ** 2)
-        return 0.0 if ss_tot == 0 else float(1.0 - ss_res / ss_tot)
-    except np.linalg.LinAlgError:
-        return 0.0
+    tsv_path = os.path.join(output_dir, "variance_partitioning.tsv")
+    if not os.path.isfile(tsv_path):
+        return None
 
-
-def _compute_variance_partitioning(df: pd.DataFrame, n_pcs: int = 20):
-    """Variance partitioning: unique batch, unique ancestry, shared per PC.
-
-    Uses the inclusion/exclusion R² decomposition:
-      unique_batch    = R²_full − R²_ancestry_only
-      unique_ancestry = R²_full − R²_batch_only
-      shared          = R²_batch + R²_ancestry − R²_full
-      residual        = 1 − R²_full
-    """
-    pc_cols = [f"PC{i}" for i in range(1, n_pcs + 1)]
-    available = [c for c in pc_cols if c in df.columns]
-
-    valid = df["RELEASE_BATCH"].notna() & df["SUPERPOPULATION"].notna()
-    sub = df.loc[valid].copy()
-
-    batch_dum = pd.get_dummies(sub["RELEASE_BATCH"], prefix="b", dtype=float)
-    anc_dum = pd.get_dummies(sub["SUPERPOPULATION"], prefix="a", dtype=float)
-    # Drop one level per factor to avoid the dummy-variable trap
-    # (perfect multicollinearity) in OLS regression.
-    if batch_dum.shape[1] > 1:
-        batch_dum = batch_dum.iloc[:, 1:]
-    if anc_dum.shape[1] > 1:
-        anc_dum = anc_dum.iloc[:, 1:]
-
+    df = pd.read_csv(tsv_path, sep="\t")
     records = []
-    for pc in available:
-        y = sub[pc].values
-        if np.sum((y - y.mean()) ** 2) == 0:
-            records.append({"PC": pc, "unique_batch": 0, "unique_ancestry": 0,
-                            "shared": 0, "residual": 1,
-                            "r2_full": 0, "r2_batch": 0, "r2_ancestry": 0})
-            continue
-        X_full = np.column_stack([batch_dum.values, anc_dum.values])
-        r2_full = _ols_r2(X_full, y)
-        r2_batch = _ols_r2(batch_dum.values, y)
-        r2_ancestry = _ols_r2(anc_dum.values, y)
-        # Inclusion/exclusion R² decomposition (Venn-diagram approach):
-        #   unique_batch    = R²_full − R²_ancestry   (batch adds beyond ancestry)
-        #   unique_ancestry = R²_full − R²_batch       (ancestry adds beyond batch)
-        #   shared          = R²_batch + R²_ancestry − R²_full  (confounded)
-        unique_batch = r2_full - r2_ancestry
-        unique_ancestry = r2_full - r2_batch
-        shared = r2_batch + r2_ancestry - r2_full
-        records.append({
-            "PC": pc,
-            "unique_batch": float(max(0, unique_batch)),
-            "unique_ancestry": float(max(0, unique_ancestry)),
-            "shared": float(max(0, shared)),
-            "residual": float(1.0 - r2_full),
-            "r2_full": float(r2_full),
-            "r2_batch": float(r2_batch),
-            "r2_ancestry": float(r2_ancestry),
-        })
+    for _, row in df.iterrows():
+        record = {"PC": str(row["PC"])}
+        for col in ["r2_full", "unique_batch", "unique_ancestry",
+                    "unique_family_role", "unique_coverage", "shared", "residual"]:
+            record[col] = float(row[col]) if col in df.columns else 0.0
+        records.append(record)
     return records
 
 
@@ -850,6 +797,7 @@ def _build_html(
     relatedness_results=None,
     permutation_results=None,
     ancestry_distance_results=None,
+    variance_partitioning_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -884,6 +832,7 @@ def _build_html(
         "relatedness_distance": relatedness_results,
         "permutation": permutation_results,
         "ancestry_distance": ancestry_distance_results,
+        "variance_partitioning": variance_partitioning_results,
     }))
 
     html = textwrap.dedent("""\
@@ -1191,6 +1140,7 @@ def _build_html(
       <a href="#section-relatedness">Relatedness</a>
       <a href="#section-ancestry-distance">Ancestry Distance</a>
       <a href="#section-permutation">Permutation Test</a>
+      <a href="#section-variance-partitioning">Variance Partitioning</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
 
@@ -1545,6 +1495,51 @@ def _build_html(
         </div>
         <div class="plot-card-body">
           <div id="perm-eta2-plot" style="height:380px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Variance Partitioning -->
+    <div class="report-section" id="section-variance-partitioning">
+      <h2>Variance Partitioning (Partial η²)</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          Marginal η² for <strong>RELEASE_BATCH</strong> and <strong>SUPERPOPULATION</strong>
+          conflates shared and unique variance, because batch composition is non-uniform across
+          ancestries. To isolate each predictor's <em>unique</em> contribution, we use a
+          <strong>Type III partial η²</strong> decomposition via leave-one-out R² differences.
+        </p>
+        <h3>Model</h3>
+        <p>
+          For each Marchenko–Pastur-selected PC:
+        </p>
+        <pre style="background:var(--surface2);padding:0.75rem 1rem;border-radius:6px;font-size:0.85rem;overflow-x:auto">PC<sub>i</sub> ~ RELEASE_BATCH + SUPERPOPULATION + FAMILY_ROLE + MEAN_AUTOSOMAL_COV</pre>
+        <p style="margin-top:0.5rem">
+          Unique contributions are computed as leave-one-out R² differences (Type III SS):
+        </p>
+        <ul>
+          <li><strong>Unique batch</strong> = R²<sub>full</sub> − R²<sub>no batch</sub></li>
+          <li><strong>Unique ancestry</strong> = R²<sub>full</sub> − R²<sub>no ancestry</sub></li>
+          <li><strong>Unique family role</strong> = R²<sub>full</sub> − R²<sub>no family role</sub></li>
+          <li><strong>Unique coverage</strong> = R²<sub>full</sub> − R²<sub>no coverage</sub></li>
+          <li><strong>Shared</strong> = max(0, R²<sub>full</sub> − Σ unique) — confounded variance</li>
+          <li><strong>Residual</strong> = 1 − R²<sub>full</sub></li>
+        </ul>
+        <p>
+          Categorical predictors are one-hot encoded (drop-first); coverage is standardised.
+          Results are generated by <code>scripts/08_variance_partitioning.py</code>.
+        </p>
+        <h3>Results</h3>
+        <p id="vp-summary"></p>
+      </div>
+
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>Variance Components per PC (Stacked Bar)</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="vp-stacked-bar" style="height:400px"></div>
         </div>
       </div>
     </div>
@@ -2780,6 +2775,73 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  VARIANCE PARTITIONING                                              */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var vp = DATA.variance_partitioning;
+      if (!vp || vp.length === 0) {
+        document.getElementById('vp-summary').textContent =
+          'Variance partitioning results not yet available. Run scripts/08_variance_partitioning.py first.';
+        return;
+      }
+
+      var pcs = vp.map(function(r) { return r.PC; });
+      var components = [
+        {key: 'unique_batch',       label: 'Unique batch',       color: '#D95F02'},
+        {key: 'unique_ancestry',    label: 'Unique ancestry',    color: '#1B9E77'},
+        {key: 'unique_family_role', label: 'Unique family role', color: '#7570B3'},
+        {key: 'unique_coverage',    label: 'Unique coverage',    color: '#E7298A'},
+        {key: 'shared',             label: 'Shared (confounded)', color: '#A6A6A6'},
+        {key: 'residual',           label: 'Residual',           color: '#F0F0F0'},
+      ].filter(function(c) { return vp[0][c.key] !== undefined; });
+
+      /* Summary: which predictor dominates each PC */
+      var dominantCounts = {};
+      components.filter(function(c) { return c.key !== 'shared' && c.key !== 'residual'; })
+        .forEach(function(c) { dominantCounts[c.label] = 0; });
+      var r2Values = vp.map(function(r) { return r.r2_full; });
+      var meanR2 = r2Values.reduce(function(a, b) { return a + b; }, 0) / r2Values.length;
+      vp.forEach(function(row) {
+        var best = null, bestVal = -1;
+        components.filter(function(c) { return c.key !== 'shared' && c.key !== 'residual'; })
+          .forEach(function(c) {
+            if ((row[c.key] || 0) > bestVal) { bestVal = row[c.key]; best = c.label; }
+          });
+        if (best && bestVal > 0) dominantCounts[best]++;
+      });
+      var domParts = Object.keys(dominantCounts).map(function(k) {
+        return '<strong>' + dominantCounts[k] + '/' + pcs.length + '</strong> PCs dominated by ' + k;
+      });
+      document.getElementById('vp-summary').innerHTML =
+        'Partial \u03b7\u00b2 decomposition across <strong>' + pcs.length
+        + '</strong> Marchenko\u2013Pastur-selected PCs. '
+        + 'Mean R\u00b2<sub>full</sub> = <strong>' + meanR2.toFixed(3) + '</strong>. '
+        + domParts.join(' \u00b7 ') + '.';
+
+      /* Stacked bar chart */
+      var traces = components.map(function(c) {
+        return {
+          x: pcs,
+          y: vp.map(function(r) { return r[c.key] || 0; }),
+          name: c.label,
+          type: 'bar',
+          marker: {color: c.color, line: {color: '#fff', width: 0.5}},
+          hovertemplate: c.label + '<br>%{x}<br>\u03b7\u00b2 = %{y:.4f}<extra></extra>',
+        };
+      });
+
+      Plotly.newPlot('vp-stacked-bar', traces, {
+        ...LAYOUT_BASE,
+        barmode: 'stack',
+        xaxis: {...LAYOUT_BASE.xaxis, title: 'Principal Component', tickangle: -45},
+        yaxis: {...LAYOUT_BASE.yaxis, title: 'Proportion of variance (partial \u03b7\u00b2)', range: [0, 1]},
+        legend: {x: 1.01, y: 1, xanchor: 'left', bgcolor: 'rgba(255,255,255,0.8)',
+                 bordercolor: '#cbd5e1', borderwidth: 1},
+        margin: {...LAYOUT_BASE.margin, r: 180, b: 80},
+      }, CFG);
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -2907,6 +2969,11 @@ def generate_report(
     if permutation_results is None:
         print("[06]   permutation_eta2_results.tsv not found — skipping permutation section")
 
+    print("[06] Loading variance partitioning results …")
+    variance_partitioning_results = _load_variance_partitioning(output_dir)
+    if variance_partitioning_results is None:
+        print("[06]   variance_partitioning.tsv not found — skipping variance partitioning section")
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -2918,6 +2985,7 @@ def generate_report(
         relatedness_results,
         permutation_results,
         ancestry_distance_results,
+        variance_partitioning_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)
