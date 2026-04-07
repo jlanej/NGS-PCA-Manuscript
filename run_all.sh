@@ -76,7 +76,12 @@ python "${SCRIPT_DIR}/scripts/11_reference_bias_audit.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
 
 echo ""
-echo "[Step 12] Interactive HTML report …"
+echo "[Step 12] Robust QC variance partitioning (ancestry vs batch on coverage metrics) …"
+python "${SCRIPT_DIR}/scripts/12_robust_qc_variance.py" \
+    --output-dir "${OUTPUT_DIR}"
+
+echo ""
+echo "[Step 13] Interactive HTML report …"
 python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
