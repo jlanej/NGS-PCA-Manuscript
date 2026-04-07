@@ -1195,3 +1195,78 @@ class TestReferenceBiasAudit:
         assert "refbias-corr-heatmap" in content, \
             "Report should have feature correlation heatmap div"
 
+
+# ---------------------------------------------------------------------------
+# Robust QC variance partitioning
+# ---------------------------------------------------------------------------
+class TestRobustQcVariance:
+    """Tests for the QC-metric variance partitioning (script 12)."""
+
+    def test_output_exists(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        assert os.path.isfile(path), f"Missing robust_qc_variance.tsv: {path}"
+        df = pd.read_csv(path, sep="\t")
+        assert len(df) > 0, "robust_qc_variance.tsv should have rows"
+
+    def test_has_expected_columns(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        df = pd.read_csv(path, sep="\t")
+        expected = {"metric", "r2_full", "unique_ancestry", "unique_batch",
+                    "shared", "residual", "n_samples"}
+        assert expected.issubset(set(df.columns)), \
+            f"Missing columns: {expected - set(df.columns)}"
+
+    def test_variance_components_nonnegative(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        df = pd.read_csv(path, sep="\t")
+        for col in ["unique_ancestry", "unique_batch", "shared", "residual"]:
+            assert (df[col] >= -1e-9).all(), \
+                f"{col} should be non-negative (got min {df[col].min():.6f})"
+
+    def test_r2_full_in_unit_interval(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        df = pd.read_csv(path, sep="\t")
+        assert (df["r2_full"] >= -1e-9).all()
+        assert (df["r2_full"] <= 1.0 + 1e-9).all()
+
+    def test_components_sum_to_one(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        df = pd.read_csv(path, sep="\t")
+        total = df["unique_ancestry"] + df["unique_batch"] + df["shared"] + df["residual"]
+        assert np.allclose(total, 1.0, atol=0.02), \
+            f"Components should sum to ~1.0 (got range {total.min():.4f}–{total.max():.4f})"
+
+    def test_sample_counts_positive(self):
+        path = os.path.join(OUTPUT_DIR, "robust_qc_variance.tsv")
+        df = pd.read_csv(path, sep="\t")
+        assert (df["n_samples"] > 0).all(), "n_samples should be positive"
+
+    def test_report_has_rqv_elements(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "rqv-stacked-bar" in content, \
+            "Report should have stacked bar chart div for QC variance partitioning"
+        assert "rqv-batch-violin" in content, \
+            "Report should have batch-conditioned violin plot div"
+        assert "12_robust_qc_variance.py" in content, \
+            "Report should reference the new analysis script"
+
+    def test_report_rqv_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        rqv = payload.get("robust_qc_variance")
+        assert rqv is not None, "DATA should contain robust_qc_variance key"
+        assert len(rqv) > 0, "robust_qc_variance should have entries"
+        assert "unique_ancestry" in rqv[0], \
+            "Each entry should have unique_ancestry field"
+        assert "unique_batch" in rqv[0], \
+            "Each entry should have unique_batch field"
+
