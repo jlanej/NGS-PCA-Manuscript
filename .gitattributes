@@ -1,0 +1,2 @@
+# Treat generated report as binary for diff purposes (large single-page HTML)
+docs/index.html binary
