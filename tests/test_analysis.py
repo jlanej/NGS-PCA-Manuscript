@@ -117,6 +117,11 @@ EXPECTED_FILES = [
     "variance_partitioning.png",
     "within_ancestry_batch.tsv",
     "within_ancestry_batch.png",
+    "crossmodality_correlation.tsv",
+    "crossmodality_summary.tsv",
+    "crossmodality_residual_batch.tsv",
+    "crossmodality_heatmap.png",
+    "crossmodality_scatter.png",
 ]
 
 
@@ -905,4 +910,186 @@ class TestWithinAncestryReport:
             content = fh.read()
         assert 'href="#section-within-ancestry"' in content, \
             "TOC should link to within-ancestry section"
+
+
+# ---------------------------------------------------------------------------
+# Cross-modality benchmark
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def crossmodality_correlation():
+    path = os.path.join(OUTPUT_DIR, "crossmodality_correlation.tsv")
+    assert os.path.isfile(path), f"Cross-modality correlation TSV not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
+@pytest.fixture(scope="module")
+def crossmodality_summary():
+    path = os.path.join(OUTPUT_DIR, "crossmodality_summary.tsv")
+    assert os.path.isfile(path), f"Cross-modality summary TSV not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
+@pytest.fixture(scope="module")
+def crossmodality_residual_batch():
+    path = os.path.join(OUTPUT_DIR, "crossmodality_residual_batch.tsv")
+    assert os.path.isfile(path), f"Cross-modality residual batch TSV not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
+class TestCrossmodalityBenchmark:
+    def test_correlation_file_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "crossmodality_correlation.tsv")
+        assert os.path.isfile(path), f"Missing output: {path}"
+        assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+    def test_summary_file_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "crossmodality_summary.tsv")
+        assert os.path.isfile(path), f"Missing output: {path}"
+        assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+    def test_residual_batch_file_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "crossmodality_residual_batch.tsv")
+        assert os.path.isfile(path), f"Missing output: {path}"
+        assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+    def test_heatmap_figure_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "crossmodality_heatmap.png")
+        assert os.path.isfile(path), f"Missing figure: {path}"
+        assert os.path.getsize(path) > 0, f"Empty figure: {path}"
+
+    def test_scatter_figure_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "crossmodality_scatter.png")
+        assert os.path.isfile(path), f"Missing figure: {path}"
+        assert os.path.getsize(path) > 0, f"Empty figure: {path}"
+
+    def test_correlation_has_expected_columns(self, crossmodality_correlation):
+        expected = {"NGS_PC", "ARRAY_PC", "pearson_r", "pearson_p",
+                    "spearman_r", "spearman_p"}
+        assert expected.issubset(set(crossmodality_correlation.columns)), \
+            f"Missing columns: {expected - set(crossmodality_correlation.columns)}"
+
+    def test_correlation_pearson_r_in_valid_range(self, crossmodality_correlation):
+        r = crossmodality_correlation["pearson_r"].dropna()
+        assert (r >= -1).all() and (r <= 1).all(), \
+            "Pearson r values should be in [-1, 1]"
+
+    def test_correlation_spearman_r_in_valid_range(self, crossmodality_correlation):
+        r = crossmodality_correlation["spearman_r"].dropna()
+        assert (r >= -1).all() and (r <= 1).all(), \
+            "Spearman ρ values should be in [-1, 1]"
+
+    def test_summary_has_canonical_correlations(self, crossmodality_summary):
+        cc_rows = crossmodality_summary[
+            crossmodality_summary["metric"] == "canonical_correlation"
+        ]
+        assert len(cc_rows) >= 1, "Summary should have canonical correlation rows"
+        assert (cc_rows["value"] >= -1).all() and (cc_rows["value"] <= 1).all(), \
+            "Canonical correlations should be in [-1, 1]"
+
+    def test_summary_has_procrustes_disparity(self, crossmodality_summary):
+        proc_rows = crossmodality_summary[
+            crossmodality_summary["metric"] == "procrustes_disparity"
+        ]
+        assert len(proc_rows) == 1, "Summary should have one procrustes_disparity row"
+        d = proc_rows["value"].iloc[0]
+        assert 0 <= d <= 1, f"Procrustes disparity should be in [0, 1], got {d}"
+
+    def test_summary_has_sample_count(self, crossmodality_summary):
+        rows = crossmodality_summary[
+            crossmodality_summary["metric"] == "n_overlapping_samples"
+        ]
+        assert len(rows) == 1
+        assert rows["value"].iloc[0] >= 10, "Should have ≥ 10 overlapping samples"
+
+    def test_residual_batch_has_expected_columns(self, crossmodality_residual_batch):
+        expected = {"NGS_PC", "eta2_batch_original", "eta2_batch_residual",
+                    "eta2_change", "n_array_pcs_adjusted"}
+        assert expected.issubset(set(crossmodality_residual_batch.columns)), \
+            f"Missing columns: {expected - set(crossmodality_residual_batch.columns)}"
+
+    def test_residual_batch_eta2_nonnegative(self, crossmodality_residual_batch):
+        for col in ["eta2_batch_original", "eta2_batch_residual"]:
+            vals = crossmodality_residual_batch[col].dropna()
+            assert (vals >= 0).all(), f"{col} should be ≥ 0"
+
+    def test_top_pc_correlation_is_strong(self, crossmodality_correlation):
+        """At least one NGS-PC × array-PC pair should show |r| > 0.2."""
+        max_abs_r = crossmodality_correlation["pearson_r"].abs().max()
+        assert max_abs_r > 0.2, (
+            f"Expected at least one moderate cross-modality correlation, "
+            f"but max |r| = {max_abs_r:.4f}"
+        )
+
+
+class TestCrossmodalityReport:
+    def test_report_has_crossmodality_section(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-crossmodality"' in content, \
+            "Report should have cross-modality section"
+        assert "crossmodality-summary" in content, \
+            "Report should have cross-modality summary paragraph"
+        assert "crossmodality-heatmap" in content, \
+            "Report should have cross-modality heatmap div"
+
+    def test_report_crossmodality_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        cm = payload.get("crossmodality")
+        assert cm is not None, "DATA should contain crossmodality key"
+        assert cm.get("n_samples", 0) > 0, "crossmodality should have n_samples > 0"
+        assert "correlation_matrix" in cm, "crossmodality should have correlation_matrix"
+        assert len(cm["correlation_matrix"]) > 0, \
+            "correlation_matrix should have entries"
+        assert "canonical_correlations" in cm, \
+            "crossmodality should have canonical_correlations"
+        assert "procrustes_disparity" in cm, \
+            "crossmodality should have procrustes_disparity"
+
+    def test_report_crossmodality_residual_batch_data(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        cm = payload.get("crossmodality")
+        if cm is None:
+            pytest.skip("crossmodality not in report payload")
+        rb = cm.get("residual_batch", [])
+        assert len(rb) > 0, "residual_batch should have entries"
+        for entry in rb:
+            assert "NGS_PC" in entry
+            assert "eta2_original" in entry
+            assert "eta2_residual" in entry
+
+    def test_report_crossmodality_toc_link(self):
+        """TOC should contain a link to the cross-modality section."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'href="#section-crossmodality"' in content, \
+            "TOC should link to cross-modality section"
+
+    def test_report_crossmodality_methods_text(self):
+        """The section should contain publication-quality methods descriptions."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "Canonical Correlation Analysis" in content, \
+            "Report should describe CCA"
+        assert "Procrustes" in content, \
+            "Report should describe Procrustes rotation"
+        assert "illumina_idat_processing" in content, \
+            "Report should reference the array processing pipeline"
 
