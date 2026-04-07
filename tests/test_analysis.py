@@ -210,7 +210,8 @@ class TestInteractiveReport:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
                         "confounding", "relatedness", "ancestry-distance",
-                        "permutation", "heatmap", "within-ancestry"]:
+                        "permutation", "heatmap", "within-ancestry",
+                        "refbias"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -1092,4 +1093,105 @@ class TestCrossmodalityReport:
             "Report should describe Procrustes rotation"
         assert "illumina_idat_processing" in content, \
             "Report should reference the array processing pipeline"
+
+
+class TestReferenceBiasAudit:
+    """Tests for the reference-genome bias audit section."""
+
+    def test_refbias_regression_output_exists(self):
+        path = os.path.join(OUTPUT_DIR, "reference_bias_regression.tsv")
+        assert os.path.isfile(path), f"Missing reference bias regression: {path}"
+        df = pd.read_csv(path, sep="\t")
+        assert len(df) > 0, "Regression output should have rows"
+        for col in ["metric", "predictor", "partial_eta2", "f_stat", "p_value"]:
+            assert col in df.columns, f"Regression output missing column: {col}"
+        assert "SUPERPOPULATION" in df["predictor"].values
+        assert "RELEASE_BATCH" in df["predictor"].values
+        # Validate value ranges
+        assert (df["partial_eta2"] >= 0).all() and (df["partial_eta2"] <= 1).all(), \
+            "partial_eta2 should be in [0, 1]"
+        valid_f = df["f_stat"].dropna()
+        assert (valid_f >= 0).all(), "f_stat should be non-negative"
+        assert (df["p_value"] >= 0).all() and (df["p_value"] <= 1).all(), \
+            "p_value should be in [0, 1]"
+
+    def test_refbias_feature_corr_output_exists(self):
+        path = os.path.join(OUTPUT_DIR, "reference_bias_feature_corr.tsv")
+        assert os.path.isfile(path), f"Missing feature correlation: {path}"
+        df = pd.read_csv(path, sep="\t", index_col=0)
+        assert df.shape[0] == df.shape[1], "Correlation matrix should be square"
+        assert df.shape[0] >= 5, "Correlation matrix should have at least 5 features"
+        # Diagonal should be 1.0 (self-correlation)
+        for i in range(df.shape[0]):
+            assert abs(df.iloc[i, i] - 1.0) < 1e-6, \
+                f"Diagonal element [{i},{i}] should be 1.0"
+        # Matrix should be symmetric
+        assert np.allclose(df.values, df.values.T, atol=1e-6, equal_nan=True), \
+            "Correlation matrix should be symmetric"
+
+    def test_report_has_refbias_section(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-refbias"' in content, \
+            "Report should have reference bias audit section"
+
+    def test_report_refbias_toc_link(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'href="#section-refbias"' in content, \
+            "TOC should link to reference bias section"
+
+    def test_report_refbias_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        rb = payload.get("reference_bias")
+        assert rb is not None, "DATA should contain reference_bias key"
+        assert "regression" in rb, "reference_bias should have regression data"
+        assert len(rb["regression"]) > 0, "regression should have entries"
+        assert "feature_corr" in rb, "reference_bias should have feature_corr"
+        assert len(rb["feature_corr"]["features"]) >= 5, \
+            "feature_corr should have at least 5 features"
+
+    def test_report_refbias_qc_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        qc = payload.get("reference_bias_qc")
+        assert qc is not None, "DATA should contain reference_bias_qc key"
+        assert "MEAN_AUTOSOMAL_COV" in qc, \
+            "reference_bias_qc should include MEAN_AUTOSOMAL_COV"
+        assert len(qc["MEAN_AUTOSOMAL_COV"]["values"]) > 0, \
+            "MEAN_AUTOSOMAL_COV should have values"
+
+    def test_report_refbias_methods_text(self):
+        """The section should contain methods descriptions for the audit."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "mappability bias" in content or "mappability" in content, \
+            "Report should mention mappability bias"
+        assert "GRCh38" in content, \
+            "Report should mention GRCh38 reference genome"
+        assert "partial" in content.lower() and "η²" in content, \
+            "Report should describe partial eta-squared"
+        assert "refbias-violin" in content, \
+            "Report should have violin plot div for QC metrics"
+        assert "refbias-regression" in content, \
+            "Report should have regression bar chart div"
+        assert "refbias-corr-heatmap" in content, \
+            "Report should have feature correlation heatmap div"
 

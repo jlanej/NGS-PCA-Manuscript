@@ -413,6 +413,78 @@ def _load_crossmodality(output_dir: str):
     }
 
 
+def _load_reference_bias_audit(output_dir: str):
+    """Load reference-bias audit results from 11_reference_bias_audit.py.
+
+    Returns a dict with ``regression`` (list of row dicts) and
+    ``feature_corr`` (dict with ``features`` and ``matrix`` lists), or None
+    if the files are absent.
+    """
+    reg_path = os.path.join(output_dir, "reference_bias_regression.tsv")
+    corr_path = os.path.join(output_dir, "reference_bias_feature_corr.tsv")
+
+    if not os.path.isfile(reg_path) or not os.path.isfile(corr_path):
+        return None
+
+    reg = pd.read_csv(reg_path, sep="\t")
+    corr = pd.read_csv(corr_path, sep="\t", index_col=0)
+
+    regression_rows = []
+    for _, row in reg.iterrows():
+        regression_rows.append({
+            "metric": str(row["metric"]),
+            "predictor": str(row["predictor"]),
+            "partial_eta2": float(row["partial_eta2"]) if not pd.isna(row["partial_eta2"]) else 0.0,
+            "f_stat": float(row["f_stat"]) if not pd.isna(row["f_stat"]) else None,
+            "p_value": float(row["p_value"]) if not pd.isna(row["p_value"]) else 1.0,
+            "df_between": int(row["df_between"]),
+            "df_within": int(row["df_within"]),
+        })
+
+    features = list(corr.columns)
+    matrix = []
+    for feat in features:
+        row_vals = []
+        for feat2 in features:
+            v = corr.loc[feat, feat2]
+            row_vals.append(float(v) if not pd.isna(v) else 0.0)
+        matrix.append(row_vals)
+
+    return {
+        "regression": regression_rows,
+        "feature_corr": {
+            "features": features,
+            "matrix": matrix,
+        },
+    }
+
+
+def _compute_reference_bias_qc_data(df: pd.DataFrame):
+    """Prepare per-sample QC metric data for violin plots by superpopulation.
+
+    Returns a dict with metric names as keys, each containing lists of
+    values and superpopulation labels suitable for Plotly violin traces.
+    """
+    qc_metrics = [
+        "MEAN_AUTOSOMAL_COV", "MEDIAN_GENOME_COV", "SD_COV",
+        "MAD_COV", "IQR_COV", "HQ_MEDIAN_COV", "HQ_IQR_COV",
+    ]
+    available = [m for m in qc_metrics if m in df.columns]
+    valid = df["SUPERPOPULATION"].notna() & df["RELEASE_BATCH"].notna()
+    sub = df.loc[valid].copy()
+
+    result = {}
+    for m in available:
+        metric_valid = sub[m].notna()
+        s = sub.loc[metric_valid]
+        result[m] = {
+            "values": s[m].tolist(),
+            "superpop": s["SUPERPOPULATION"].tolist(),
+            "batch": s["RELEASE_BATCH"].tolist(),
+        }
+    return result
+
+
 def _load_variance_partitioning(output_dir: str):
     """Load variance partitioning results from the TSV produced by 08_variance_partitioning.py.
 
@@ -924,6 +996,8 @@ def _build_html(
     variance_partitioning_results=None,
     within_ancestry_results=None,
     crossmodality_results=None,
+    reference_bias_results=None,
+    reference_bias_qc_data=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -961,6 +1035,8 @@ def _build_html(
         "variance_partitioning": variance_partitioning_results,
         "within_ancestry": within_ancestry_results,
         "crossmodality": crossmodality_results,
+        "reference_bias": reference_bias_results,
+        "reference_bias_qc": reference_bias_qc_data,
     }))
 
     html = textwrap.dedent("""\
@@ -1271,6 +1347,7 @@ def _build_html(
       <a href="#section-variance-partitioning">Variance Partitioning</a>
       <a href="#section-within-ancestry">Within-Ancestry Batch</a>
       <a href="#section-crossmodality">Cross-Modality</a>
+      <a href="#section-refbias">Reference Bias Audit</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
 
@@ -1788,6 +1865,81 @@ def _build_html(
           </div>
           <div class="plot-card-body">
             <div id="crossmodality-residual" style="height:350px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reference Bias Audit -->
+    <div class="report-section" id="section-refbias">
+      <h2>Reference-Genome Bias Audit</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          The GRCh38 reference genome is derived primarily from individuals of European
+          ancestry.  This creates the possibility that <strong>mappability bias</strong> —
+          systematic differences in read alignment and coverage driven by reference
+          similarity — could introduce ancestry-correlated gradients in genome-wide
+          coverage statistics.  If such gradients persist after bin curation and QC
+          filtering, they indicate residual reference-driven technical bias that could
+          confound NGS-PCA components.
+        </p>
+        <h3>Methods</h3>
+        <p>
+          <strong>QC metrics by superpopulation.</strong>&ensp;Violin plots of key
+          autosomal coverage statistics (mean, median, dispersion) are stratified by
+          superpopulation (AFR, AMR, EAS, EUR, SAS) as a visual screen for
+          ancestry-correlated differences.  Each violin spans a single metric, with
+          inner box-and-whisker summaries and individual data points overlaid.
+        </p>
+        <p>
+          <strong>OLS regression.</strong>&ensp;For each QC metric, an ordinary
+          least-squares model is fit:
+          <code>QC_metric ~ SUPERPOPULATION + RELEASE_BATCH</code>.
+          <em>Partial η²</em> is computed for each predictor after adjusting for the
+          other: the outcome is residualised by group-centring with respect to the
+          nuisance variable, and η² is then computed on the adjusted values.
+          Significant SUPERPOPULATION terms after controlling for batch indicate
+          possible reference-driven bias in that metric.
+        </p>
+        <p>
+          <strong>Feature–feature correlation heatmap.</strong>&ensp;Absolute Pearson
+          correlations are computed among the Marchenko–Pastur-selected NGS PCs,
+          array-based genotype PCs (first 10), and the core QC metrics.  Hierarchical
+          clustering of the resulting matrix reveals whether QC variables co-cluster
+          with ancestry-sensitive principal components, suggesting shared
+          reference-driven variation.
+        </p>
+        <p>
+          Results are generated by <code>scripts/11_reference_bias_audit.py</code>.
+        </p>
+        <h3>Results</h3>
+        <p id="refbias-summary"></p>
+      </div>
+
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>QC Metrics by Superpopulation</h3>
+          <select id="refbias-metric-select" style="margin-left:1rem;padding:0.25rem 0.5rem;border-radius:4px;border:1px solid #cbd5e1;font-size:0.85rem;"></select>
+        </div>
+        <div class="plot-card-body"><div id="refbias-violin" style="height:450px"></div></div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:1.5rem;margin-top:1.5rem;">
+        <div class="plot-card" style="flex:1;min-width:400px;">
+          <div class="plot-card-header">
+            <h3>Partial η² — Ancestry vs Batch Effect on QC Metrics</h3>
+          </div>
+          <div class="plot-card-body">
+            <div id="refbias-regression" style="height:400px"></div>
+          </div>
+        </div>
+        <div class="plot-card" style="flex:1;min-width:400px;">
+          <div class="plot-card-header">
+            <h3>Feature–Feature Correlation (NGS PCs × Array PCs × QC)</h3>
+          </div>
+          <div class="plot-card-body">
+            <div id="refbias-corr-heatmap" style="height:500px"></div>
           </div>
         </div>
       </div>
@@ -3333,6 +3485,158 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  REFERENCE BIAS AUDIT                                               */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var rb = DATA.reference_bias;
+      var qc = DATA.reference_bias_qc;
+      var summaryEl = document.getElementById('refbias-summary');
+      if (!rb || !rb.regression || rb.regression.length === 0) {
+        if (summaryEl) summaryEl.textContent =
+          'Reference bias audit results not yet available. Run scripts/11_reference_bias_audit.py first.';
+        return;
+      }
+
+      /* ---- Summary paragraph ---- */
+      var superpopRows = rb.regression.filter(function(r) { return r.predictor === 'SUPERPOPULATION'; });
+      var batchRows    = rb.regression.filter(function(r) { return r.predictor === 'RELEASE_BATCH'; });
+      var nSigAnc  = superpopRows.filter(function(r) { return r.p_value < 0.05; }).length;
+      var nSigBatch = batchRows.filter(function(r) { return r.p_value < 0.05; }).length;
+      var maxAncEta2 = superpopRows.reduce(function(mx, r) { return Math.max(mx, r.partial_eta2 || 0); }, 0);
+      var maxBatchEta2 = batchRows.reduce(function(mx, r) { return Math.max(mx, r.partial_eta2 || 0); }, 0);
+
+      summaryEl.innerHTML =
+        'OLS regression of <strong>' + superpopRows.length + '</strong> QC metrics on '
+        + 'SUPERPOPULATION + RELEASE_BATCH. '
+        + 'After adjusting for batch, <strong>' + nSigAnc + '/' + superpopRows.length
+        + '</strong> metrics show a significant ancestry effect (p\u202f&lt;\u202f0.05), '
+        + 'max partial \u03b7\u00b2\u202f=\u202f' + maxAncEta2.toFixed(4) + '. '
+        + 'After adjusting for ancestry, <strong>' + nSigBatch + '/' + batchRows.length
+        + '</strong> metrics show a significant batch effect, '
+        + 'max partial \u03b7\u00b2\u202f=\u202f' + maxBatchEta2.toFixed(4) + '. '
+        + (maxAncEta2 < 0.01
+           ? 'The negligible ancestry partial \u03b7\u00b2 values indicate '
+             + '<strong>no meaningful reference-genome bias</strong> in the curated QC metrics.'
+           : 'Non-trivial ancestry partial \u03b7\u00b2 values suggest '
+             + 'some residual reference-genome bias may persist in coverage metrics.');
+
+      /* ---- Violin plots ---- */
+      var metrics = qc ? Object.keys(qc) : [];
+      var metricSel = document.getElementById('refbias-metric-select');
+      metrics.forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        metricSel.appendChild(opt);
+      });
+
+      function drawViolin(metric) {
+        var d = qc[metric];
+        if (!d) return;
+        var spops = ['AFR','AMR','EAS','EUR','SAS'];
+        var traces = spops.map(function(sp) {
+          var vals = [];
+          for (var i = 0; i < d.values.length; i++) {
+            if (d.superpop[i] === sp) vals.push(d.values[i]);
+          }
+          return {
+            type: 'violin', y: vals, name: sp,
+            box: {visible: true}, meanline: {visible: true},
+            scalemode: 'count',
+            marker: {color: PAL_SUPERPOP[sp]},
+            points: 'outliers',
+          };
+        }).filter(function(t) { return t.y.length > 0; });
+        Plotly.react('refbias-violin', traces, {
+          ...LAYOUT_BASE,
+          showlegend: true,
+          yaxis: {...LAYOUT_BASE.yaxis, title: metric},
+          margin: {...LAYOUT_BASE.margin, b: 60},
+        }, CFG);
+      }
+      if (metrics.length > 0) drawViolin(metrics[0]);
+      metricSel.addEventListener('change', function() { drawViolin(this.value); });
+
+      /* ---- Regression grouped bar chart ---- */
+      var regMetrics = [...new Set(rb.regression.map(function(r) { return r.metric; }))];
+      var ancTrace = {
+        x: regMetrics, type: 'bar', name: 'SUPERPOPULATION (partial \u03b7\u00b2)',
+        marker: {color: '#984EA3'},
+        y: regMetrics.map(function(m) {
+          var r = superpopRows.find(function(x) { return x.metric === m; });
+          return r ? r.partial_eta2 : 0;
+        }),
+        text: regMetrics.map(function(m) {
+          var r = superpopRows.find(function(x) { return x.metric === m; });
+          if (!r) return '';
+          return r.p_value < 0.001 ? '***' : r.p_value < 0.01 ? '**' : r.p_value < 0.05 ? '*' : 'ns';
+        }),
+        textposition: 'outside', textfont: {size: 9},
+        hovertext: regMetrics.map(function(m) {
+          var r = superpopRows.find(function(x) { return x.metric === m; });
+          if (!r) return '';
+          return m + '<br>SUPERPOPULATION<br>partial \u03b7\u00b2 = ' + r.partial_eta2.toFixed(4)
+            + '<br>F(' + r.df_between + ',' + r.df_within + ') = '
+            + (r.f_stat != null ? r.f_stat.toFixed(2) : 'N/A')
+            + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(2) : r.p_value.toFixed(4));
+        }),
+        hoverinfo: 'text',
+      };
+      var batchTrace = {
+        x: regMetrics, type: 'bar', name: 'RELEASE_BATCH (partial \u03b7\u00b2)',
+        marker: {color: '#D95F02'},
+        y: regMetrics.map(function(m) {
+          var r = batchRows.find(function(x) { return x.metric === m; });
+          return r ? r.partial_eta2 : 0;
+        }),
+        text: regMetrics.map(function(m) {
+          var r = batchRows.find(function(x) { return x.metric === m; });
+          if (!r) return '';
+          return r.p_value < 0.001 ? '***' : r.p_value < 0.01 ? '**' : r.p_value < 0.05 ? '*' : 'ns';
+        }),
+        textposition: 'outside', textfont: {size: 9},
+        hovertext: regMetrics.map(function(m) {
+          var r = batchRows.find(function(x) { return x.metric === m; });
+          if (!r) return '';
+          return m + '<br>RELEASE_BATCH<br>partial \u03b7\u00b2 = ' + r.partial_eta2.toFixed(4)
+            + '<br>F(' + r.df_between + ',' + r.df_within + ') = '
+            + (r.f_stat != null ? r.f_stat.toFixed(2) : 'N/A')
+            + '<br>p = ' + (r.p_value < 0.001 ? r.p_value.toExponential(2) : r.p_value.toFixed(4));
+        }),
+        hoverinfo: 'text',
+      };
+      Plotly.newPlot('refbias-regression', [ancTrace, batchTrace], {
+        ...LAYOUT_BASE,
+        barmode: 'group',
+        showlegend: true,
+        legend: {x: 0.01, y: 0.99, bgcolor: 'rgba(255,255,255,0.8)',
+                 bordercolor: '#cbd5e1', borderwidth: 1, font: {size: 10}},
+        xaxis: {...LAYOUT_BASE.xaxis, title: 'QC Metric', tickangle: -35, tickfont: {size: 9}},
+        yaxis: {...LAYOUT_BASE.yaxis, title: 'Partial \u03b7\u00b2'},
+        margin: {...LAYOUT_BASE.margin, b: 120},
+      }, CFG);
+
+      /* ---- Feature correlation heatmap ---- */
+      var fc = rb.feature_corr;
+      if (fc && fc.features && fc.matrix) {
+        Plotly.newPlot('refbias-corr-heatmap', [{
+          z: fc.matrix,
+          x: fc.features,
+          y: fc.features,
+          type: 'heatmap',
+          colorscale: 'YlOrRd',
+          zmin: 0, zmax: 1,
+          colorbar: {title: '|Pearson r|', titleside: 'right'},
+          hovertemplate: '%{y} \u00d7 %{x}<br>|r| = %{z:.3f}<extra></extra>',
+        }], {
+          ...LAYOUT_BASE,
+          xaxis: {...LAYOUT_BASE.xaxis, tickangle: -45, tickfont: {size: 8}, side: 'bottom'},
+          yaxis: {...LAYOUT_BASE.yaxis, autorange: 'reversed', tickfont: {size: 8}},
+          margin: {t: 15, r: 90, b: 120, l: 120},
+        }, CFG);
+      }
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -3475,6 +3779,14 @@ def generate_report(
     if crossmodality_results is None:
         print("[06]   crossmodality TSVs not found — skipping cross-modality section")
 
+    print("[06] Loading reference bias audit results …")
+    reference_bias_results = _load_reference_bias_audit(output_dir)
+    if reference_bias_results is None:
+        print("[06]   reference_bias TSVs not found — skipping reference bias section")
+
+    print("[06] Computing reference bias QC data for violin plots …")
+    reference_bias_qc_data = _compute_reference_bias_qc_data(merged)
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -3489,6 +3801,8 @@ def generate_report(
         variance_partitioning_results,
         within_ancestry_results,
         crossmodality_results,
+        reference_bias_results,
+        reference_bias_qc_data,
     )
 
     os.makedirs(report_dir, exist_ok=True)
