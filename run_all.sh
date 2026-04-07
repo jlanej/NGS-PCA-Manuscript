@@ -60,7 +60,13 @@ python "${SCRIPT_DIR}/scripts/07_permutation_test.py" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
 
 echo ""
-echo "[Step 8] Interactive HTML report …"
+echo "[Step 9] Within-ancestry stratified batch test …"
+python "${SCRIPT_DIR}/scripts/09_within_ancestry_batch.py" \
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
+    --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
+
+echo ""
+echo "[Step 10] Interactive HTML report …"
 python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"

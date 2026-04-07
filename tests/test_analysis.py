@@ -115,6 +115,8 @@ EXPECTED_FILES = [
     "permutation_eta2_nulldist.png",
     "variance_partitioning.tsv",
     "variance_partitioning.png",
+    "within_ancestry_batch.tsv",
+    "within_ancestry_batch.png",
 ]
 
 
@@ -203,7 +205,7 @@ class TestInteractiveReport:
             content = fh.read()
         for section in ["intro", "scree", "pca", "umap",
                         "confounding", "relatedness", "ancestry-distance",
-                        "permutation", "heatmap"]:
+                        "permutation", "heatmap", "within-ancestry"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -778,3 +780,129 @@ class TestVariancePartitioning:
     def test_unique_ancestry_nonzero_for_at_least_one_pc(self, variance_partitioning):
         assert (variance_partitioning["unique_ancestry"] > 0).any(), \
             "Unique ancestry variance should be > 0 for at least one PC"
+
+
+# ---------------------------------------------------------------------------
+# Within-ancestry stratified batch test
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def within_ancestry():
+    path = os.path.join(OUTPUT_DIR, "within_ancestry_batch.tsv")
+    assert os.path.isfile(path), f"Within-ancestry batch TSV not found: {path}"
+    return pd.read_csv(path, sep="\t")
+
+
+class TestWithinAncestryBatch:
+    def test_file_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "within_ancestry_batch.tsv")
+        assert os.path.isfile(path), f"Missing output: {path}"
+        assert os.path.getsize(path) > 0, f"Empty output: {path}"
+
+    def test_figure_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "within_ancestry_batch.png")
+        assert os.path.isfile(path), f"Missing figure: {path}"
+        assert os.path.getsize(path) > 0, f"Empty figure: {path}"
+
+    def test_has_expected_columns(self, within_ancestry):
+        expected = {"Superpopulation", "Variable", "PC", "n_samples", "observed_eta2"}
+        assert expected.issubset(set(within_ancestry.columns)), \
+            f"within_ancestry_batch.tsv missing columns: {expected - set(within_ancestry.columns)}"
+
+    def test_has_all_superpopulations(self, within_ancestry):
+        found = set(within_ancestry["Superpopulation"].unique())
+        valid = {"AFR", "AMR", "EAS", "EUR", "SAS"}
+        assert found.issubset(valid), \
+            f"Unexpected superpopulation values: {found - valid}"
+        assert len(found) >= 1, "within_ancestry_batch.tsv should have at least one superpopulation"
+
+    def test_has_release_batch_variable(self, within_ancestry):
+        assert "RELEASE_BATCH" in within_ancestry["Variable"].values, \
+            "within_ancestry_batch.tsv should contain RELEASE_BATCH rows"
+
+    def test_has_family_role_variable(self, within_ancestry):
+        assert "FAMILY_ROLE" in within_ancestry["Variable"].values, \
+            "within_ancestry_batch.tsv should contain FAMILY_ROLE rows"
+
+    def test_sample_counts_per_group_positive(self, within_ancestry):
+        for group in within_ancestry["Superpopulation"].unique():
+            sub = within_ancestry[within_ancestry["Superpopulation"] == group]
+            assert sub["n_samples"].iloc[0] > 0, \
+                f"Group {group} should have > 0 samples"
+
+    def test_eta2_nonnegative(self, within_ancestry):
+        assert (within_ancestry["observed_eta2"] >= 0).all(), \
+            "All observed η² values should be ≥ 0"
+
+    def test_pvalues_in_valid_range_when_present(self, within_ancestry):
+        if "p_value" in within_ancestry.columns:
+            valid = within_ancestry["p_value"].dropna()
+            assert (valid > 0).all(), "All p-values should be > 0"
+            assert (valid <= 1).all(), "All p-values should be ≤ 1"
+
+    def test_batch_eta2_nonzero_in_at_least_one_group(self, within_ancestry):
+        batch_rows = within_ancestry[within_ancestry["Variable"] == "RELEASE_BATCH"]
+        assert (batch_rows["observed_eta2"] > 0).any(), \
+            "Batch η² should be > 0 in at least one superpopulation × PC combination"
+
+
+class TestWithinAncestryReport:
+    def test_report_has_within_ancestry_section(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-within-ancestry"' in content, \
+            "Report should have within-ancestry section"
+        assert "within-ancestry-summary" in content, \
+            "Report should have within-ancestry summary paragraph"
+        assert "within-ancestry-facets" in content, \
+            "Report should have within-ancestry facets div"
+
+    def test_report_within_ancestry_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        wa = payload.get("within_ancestry")
+        assert wa is not None, "DATA should contain within_ancestry key"
+        assert "pc_cols" in wa and len(wa["pc_cols"]) > 0, \
+            "within_ancestry should list pc_cols"
+        assert "superpops" in wa and len(wa["superpops"]) > 0, \
+            "within_ancestry should list superpops"
+        assert "results" in wa, "within_ancestry should have results dict"
+        # Each present superpopulation should have at least one variable's data
+        for sp in wa["superpops"]:
+            assert sp in wa["results"], f"results should include superpop {sp}"
+            assert len(wa["results"][sp]) >= 1, \
+                f"results[{sp}] should include at least one variable"
+
+    def test_report_within_ancestry_sample_counts(self):
+        """Each superpop entry should report a positive n_samples."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        payload = json.loads(match.group(1))
+        wa = payload.get("within_ancestry")
+        if wa is None:
+            pytest.skip("within_ancestry not in report payload")
+        for sp in wa["superpops"]:
+            for var in wa["results"].get(sp, {}):
+                n = wa["results"][sp][var].get("n_samples", 0)
+                assert n > 0, f"results[{sp}][{var}]['n_samples'] should be > 0, got {n}"
+
+    def test_report_within_ancestry_toc_link(self):
+        """TOC should contain a link to the within-ancestry section."""
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'href="#section-within-ancestry"' in content, \
+            "TOC should link to within-ancestry section"
+
