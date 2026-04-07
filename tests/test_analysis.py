@@ -1107,6 +1107,13 @@ class TestReferenceBiasAudit:
             assert col in df.columns, f"Regression output missing column: {col}"
         assert "SUPERPOPULATION" in df["predictor"].values
         assert "RELEASE_BATCH" in df["predictor"].values
+        # Validate value ranges
+        assert (df["partial_eta2"] >= 0).all() and (df["partial_eta2"] <= 1).all(), \
+            "partial_eta2 should be in [0, 1]"
+        valid_f = df["f_stat"].dropna()
+        assert (valid_f >= 0).all(), "f_stat should be non-negative"
+        assert (df["p_value"] >= 0).all() and (df["p_value"] <= 1).all(), \
+            "p_value should be in [0, 1]"
 
     def test_refbias_feature_corr_output_exists(self):
         path = os.path.join(OUTPUT_DIR, "reference_bias_feature_corr.tsv")
@@ -1114,6 +1121,13 @@ class TestReferenceBiasAudit:
         df = pd.read_csv(path, sep="\t", index_col=0)
         assert df.shape[0] == df.shape[1], "Correlation matrix should be square"
         assert df.shape[0] >= 5, "Correlation matrix should have at least 5 features"
+        # Diagonal should be 1.0 (self-correlation)
+        for i in range(df.shape[0]):
+            assert abs(df.iloc[i, i] - 1.0) < 1e-6, \
+                f"Diagonal element [{i},{i}] should be 1.0"
+        # Matrix should be symmetric
+        assert np.allclose(df.values, df.values.T, atol=1e-6, equal_nan=True), \
+            "Correlation matrix should be symmetric"
 
     def test_report_has_refbias_section(self):
         path = os.path.join(REPORT_DIR, "index.html")

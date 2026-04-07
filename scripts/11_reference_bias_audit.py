@@ -75,7 +75,8 @@ def _load_array_pcs(data_dir: str) -> pd.DataFrame | None:
         f"PC{i}" for i in range(1, 21)
     ]
     df = pd.read_csv(path, sep="\t", usecols=cols_needed)
-    # Remove stray header rows from file concatenation
+    # Remove stray header rows that appear when multiple cohort files are
+    # concatenated (the duplicated header has sample_id='IID').
     df = df[df["sample_id"] != "IID"].copy()
     df["pre_pca_excluded"] = pd.to_numeric(df["pre_pca_excluded"], errors="coerce")
     df = df[df["pre_pca_excluded"] == 0].copy()
@@ -110,9 +111,8 @@ def compute_regression(df: pd.DataFrame) -> pd.DataFrame:
             # Partial η²: residualise y for the other predictor, then compute η²
             other = "RELEASE_BATCH" if predictor == "SUPERPOPULATION" else "SUPERPOPULATION"
             # Group-centre y by the 'other' variable to partial it out
-            other_groups = sub[other].values
-            group_means = {g: np.nanmean(y[other_groups == g]) for g in np.unique(other_groups)}
-            y_adj = y - np.array([group_means[g] for g in other_groups])
+            other_means = sub.groupby(other)[metric].transform("mean").values
+            y_adj = y - other_means
 
             eta2 = eta_squared(sub[predictor], y_adj)
 
@@ -183,8 +183,14 @@ def compute_feature_correlation(
                         ])
                         n_array_pcs += 1
 
+    # Filter out constant features (zero variance → undefined correlation)
+    feature_names = [
+        k for k, v in features.items()
+        if np.nanstd(v) > 0
+    ]
+    features = {k: features[k] for k in feature_names}
+
     # Build correlation matrix
-    feature_names = list(features.keys())
     n = len(feature_names)
     mat = np.full((n, n), np.nan)
     for i in range(n):
