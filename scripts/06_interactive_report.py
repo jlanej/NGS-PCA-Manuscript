@@ -340,6 +340,79 @@ def _load_within_ancestry_batch(output_dir: str):
     }
 
 
+def _load_crossmodality(output_dir: str):
+    """Load cross-modality benchmark results from the TSVs produced by
+    10_crossmodality_benchmark.py.
+
+    Returns a dict ready for JSON embedding, or None if the files are absent.
+    """
+    corr_path = os.path.join(output_dir, "crossmodality_correlation.tsv")
+    summary_path = os.path.join(output_dir, "crossmodality_summary.tsv")
+    resid_path = os.path.join(output_dir, "crossmodality_residual_batch.tsv")
+
+    if not os.path.isfile(corr_path) or not os.path.isfile(summary_path):
+        return None
+
+    corr = pd.read_csv(corr_path, sep="\t")
+    summary = pd.read_csv(summary_path, sep="\t")
+    resid = pd.read_csv(resid_path, sep="\t") if os.path.isfile(resid_path) else None
+
+    # Extract key summary metrics
+    def _metric(name):
+        row = summary[summary["metric"] == name]
+        return float(row["value"].iloc[0]) if len(row) else None
+
+    n_samples = _metric("n_overlapping_samples")
+    n_ngs_pcs = _metric("n_ngs_pcs")
+    n_array_pcs = _metric("n_array_pcs")
+    procrustes_disparity = _metric("procrustes_disparity")
+    mean_cca = _metric("mean_canonical_correlation")
+
+    cc_rows = summary[summary["metric"] == "canonical_correlation"].sort_values("component")
+    canonical_correlations = cc_rows["value"].tolist()
+
+    # Build correlation matrix data
+    ngs_pcs = sorted(corr["NGS_PC"].unique().tolist(), key=lambda p: int(p[2:]))
+    array_pcs = sorted(corr["ARRAY_PC"].unique().tolist(),
+                       key=lambda p: int(p.replace("ARRAY_PC", "")))
+    corr_matrix = []
+    for _, row in corr.iterrows():
+        corr_matrix.append({
+            "ngs": row["NGS_PC"],
+            "array": row["ARRAY_PC"],
+            "pearson_r": float(row["pearson_r"]) if not pd.isna(row["pearson_r"]) else None,
+            "spearman_r": float(row["spearman_r"]) if not pd.isna(row["spearman_r"]) else None,
+        })
+
+    # Residual batch results
+    resid_data = []
+    if resid is not None:
+        for _, row in resid.iterrows():
+            resid_data.append({
+                "NGS_PC": row["NGS_PC"],
+                "eta2_original": float(row["eta2_batch_original"])
+                if not pd.isna(row["eta2_batch_original"]) else None,
+                "eta2_residual": float(row["eta2_batch_residual"])
+                if not pd.isna(row["eta2_batch_residual"]) else None,
+                "eta2_change": float(row["eta2_change"])
+                if not pd.isna(row["eta2_change"]) else None,
+                "n_array_pcs_adjusted": int(row["n_array_pcs_adjusted"]),
+            })
+
+    return {
+        "n_samples": int(n_samples) if n_samples else 0,
+        "n_ngs_pcs": int(n_ngs_pcs) if n_ngs_pcs else 0,
+        "n_array_pcs": int(n_array_pcs) if n_array_pcs else 0,
+        "procrustes_disparity": procrustes_disparity,
+        "mean_canonical_correlation": mean_cca,
+        "canonical_correlations": canonical_correlations,
+        "ngs_pcs": ngs_pcs,
+        "array_pcs": array_pcs,
+        "correlation_matrix": corr_matrix,
+        "residual_batch": resid_data,
+    }
+
+
 def _load_variance_partitioning(output_dir: str):
     """Load variance partitioning results from the TSV produced by 08_variance_partitioning.py.
 
@@ -850,6 +923,7 @@ def _build_html(
     ancestry_distance_results=None,
     variance_partitioning_results=None,
     within_ancestry_results=None,
+    crossmodality_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -886,6 +960,7 @@ def _build_html(
         "ancestry_distance": ancestry_distance_results,
         "variance_partitioning": variance_partitioning_results,
         "within_ancestry": within_ancestry_results,
+        "crossmodality": crossmodality_results,
     }))
 
     html = textwrap.dedent("""\
@@ -1195,6 +1270,7 @@ def _build_html(
       <a href="#section-permutation">Permutation Test</a>
       <a href="#section-variance-partitioning">Variance Partitioning</a>
       <a href="#section-within-ancestry">Within-Ancestry Batch</a>
+      <a href="#section-crossmodality">Cross-Modality</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
 
@@ -1624,6 +1700,97 @@ def _build_html(
         <p id="within-ancestry-summary"></p>
       </div>
       <div id="within-ancestry-facets"></div>
+    </div>
+
+    <!-- Cross-Modality Validation -->
+    <div class="report-section" id="section-crossmodality">
+      <h2>Cross-Modality Validation: NGS-PCA vs. Array-Based PCA</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          NGS-PCA derives principal components from autosomal read-depth profiles, which are
+          sensitive to mappability, GC content, library preparation, and reference bias.
+          Genotype-based PCA, in contrast, operates on allele frequencies from SNP array
+          genotyping and is immune to these coverage-based artefacts. Comparing the two modalities
+          tests whether the ancestry signal captured by NGS-PCA reflects genuine population
+          structure or is dominated by technical artefacts.
+        </p>
+        <h3>Methods</h3>
+        <p>
+          Array-based ancestry PCs were derived from Illumina Global Screening Array (GSA)
+          genotyping data processed through the
+          <a href="https://github.com/jlanej/illumina_idat_processing" target="_blank"
+             rel="noopener">illumina_idat_processing</a> pipeline. Raw IDAT intensity files
+          were converted to genotype calls via bcftools <code>idat2gtc</code> and
+          <code>gtc2vcf</code> plugins (bypassing Genome Studio), followed by study-specific
+          cluster recalibration, stringent sample QC (call rate ≥ 0.97, LRR SD ≤ 0.35),
+          relatedness pruning, heterozygosity outlier removal, ancestry-stratified HWE
+          filtering, LD pruning, and flashpca2 PCA computation with projection.
+          Twenty array-based PCs were computed from unrelated, non-outlier samples and
+          projected onto the full cohort.
+        </p>
+        <p>
+          <strong>PC–PC correlation matrix.</strong>&ensp;Pearson and Spearman correlations
+          are computed between each Marchenko–Pastur-selected NGS-PC and each of the 20
+          array-PCs. High absolute correlations along the diagonal indicate that the two
+          modalities recover similar axes of variation.
+        </p>
+        <p>
+          <strong>Canonical Correlation Analysis (CCA).</strong>&ensp;CCA
+          (<code>sklearn.cross_decomposition.CCA</code>) identifies linear combinations of
+          each PC set that maximise correlation, yielding canonical correlation coefficients
+          that quantify overall subspace alignment without requiring matched component ordering.
+        </p>
+        <p>
+          <strong>Procrustes rotation.</strong>&ensp;The NGS-PC and array-PC embeddings are
+          optimally aligned via translation, rotation, and uniform scaling
+          (<code>scipy.spatial.procrustes</code>). The Procrustes disparity
+          (sum of squared residuals after alignment, normalised to [0, 1]) measures
+          geometric dissimilarity; values near 0 indicate near-identical structure.
+        </p>
+        <p>
+          <strong>Residual batch test.</strong>&ensp;For each NGS-PC, the top array-PCs are
+          regressed out via OLS. η²(RELEASE_BATCH) is then computed on the residuals.
+          If batch signal persists in the residuals — i.e. the portion of NGS-PC variance
+          <em>not</em> explained by genotype-based ancestry — it suggests that the batch
+          effect is a genuine technical artefact independent of population structure.
+          If batch η² drops to near zero after adjustment, the apparent "batch" effect
+          was confounded with ancestry differences between sequencing phases.
+        </p>
+        <p>
+          Results are generated by <code>scripts/10_crossmodality_benchmark.py</code>.
+        </p>
+        <h3>Results</h3>
+        <p id="crossmodality-summary"></p>
+      </div>
+
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>NGS-PC × Array-PC Correlation Heatmap</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="crossmodality-heatmap" style="height:500px"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:1.5rem;margin-top:1.5rem;">
+        <div class="plot-card" style="flex:1;min-width:400px;">
+          <div class="plot-card-header">
+            <h3>Canonical Correlations (CCA)</h3>
+          </div>
+          <div class="plot-card-body">
+            <div id="crossmodality-cca" style="height:350px"></div>
+          </div>
+        </div>
+        <div class="plot-card" style="flex:1;min-width:400px;">
+          <div class="plot-card-header">
+            <h3>Batch η² Before &amp; After Array-PC Adjustment</h3>
+          </div>
+          <div class="plot-card-body">
+            <div id="crossmodality-residual" style="height:350px"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Heatmap -->
@@ -3031,6 +3198,141 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  CROSS-MODALITY VALIDATION                                          */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var cm = DATA.crossmodality;
+      var summaryEl = document.getElementById('crossmodality-summary');
+      if (!cm || !cm.correlation_matrix || cm.correlation_matrix.length === 0) {
+        if (summaryEl) summaryEl.textContent =
+          'Cross-modality results not yet available. Run scripts/10_crossmodality_benchmark.py first.';
+        return;
+      }
+
+      /* ---- Summary paragraph ---- */
+      var maxAbsR = 0, maxPair = '';
+      cm.correlation_matrix.forEach(function(r) {
+        var ar = Math.abs(r.pearson_r || 0);
+        if (ar > maxAbsR) { maxAbsR = ar; maxPair = r.ngs + ' \u2194 ' + r.array; }
+      });
+
+      var ccStr = cm.canonical_correlations
+        ? cm.canonical_correlations.slice(0, 5).map(function(c) { return c.toFixed(3); }).join(', ')
+        : 'N/A';
+
+      var summaryHTML =
+        'Cross-modality comparison of <strong>' + cm.n_ngs_pcs + '</strong> '
+        + 'Marchenko\u2013Pastur-selected NGS-PCs against <strong>' + cm.n_array_pcs
+        + '</strong> array-based genotype PCs across <strong>' + cm.n_samples
+        + '</strong> overlapping samples. '
+        + 'Strongest absolute Pearson correlation: |<em>r</em>|\u202f=\u202f<strong>'
+        + maxAbsR.toFixed(3) + '</strong> (' + maxPair + '). '
+        + 'Mean CCA canonical correlation: <strong>'
+        + (cm.mean_canonical_correlation != null ? cm.mean_canonical_correlation.toFixed(3) : 'N/A')
+        + '</strong>. '
+        + 'Procrustes disparity: <strong>'
+        + (cm.procrustes_disparity != null ? cm.procrustes_disparity.toFixed(4) : 'N/A')
+        + '</strong> (0\u202f=\u202fidentical, 1\u202f=\u202fno alignment). '
+        + 'Top-5 canonical correlations: [' + ccStr + '].';
+
+      if (summaryEl) summaryEl.innerHTML = summaryHTML;
+
+      /* ---- Correlation heatmap ---- */
+      var ngsPCs = cm.ngs_pcs;
+      var arrayPCs = cm.array_pcs;
+      var z = ngsPCs.map(function(npc) {
+        return arrayPCs.map(function(apc) {
+          var hit = cm.correlation_matrix.find(function(r) {
+            return r.ngs === npc && r.array === apc;
+          });
+          return hit ? Math.abs(hit.pearson_r || 0) : 0;
+        });
+      });
+      var hovertext = ngsPCs.map(function(npc) {
+        return arrayPCs.map(function(apc) {
+          var hit = cm.correlation_matrix.find(function(r) {
+            return r.ngs === npc && r.array === apc;
+          });
+          if (!hit) return '';
+          return npc + ' \u2194 ' + apc
+            + '<br>Pearson r = ' + (hit.pearson_r != null ? hit.pearson_r.toFixed(4) : 'N/A')
+            + '<br>Spearman \u03c1 = ' + (hit.spearman_r != null ? hit.spearman_r.toFixed(4) : 'N/A');
+        });
+      });
+
+      Plotly.newPlot('crossmodality-heatmap', [{
+        z: z,
+        x: arrayPCs.map(function(c) { return c.replace('ARRAY_', ''); }),
+        y: ngsPCs,
+        type: 'heatmap',
+        colorscale: 'YlOrRd',
+        zmin: 0, zmax: 1,
+        hovertext: hovertext,
+        hoverinfo: 'text',
+        colorbar: { title: '|Pearson r|', titleside: 'right' },
+      }], {
+        ...LAYOUT_BASE,
+        xaxis: { ...LAYOUT_BASE.xaxis, title: 'Array PC', tickangle: -45 },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'NGS PC', autorange: 'reversed' },
+        margin: { ...LAYOUT_BASE.margin, l: 80, b: 80, r: 100 },
+      }, CFG);
+
+      /* ---- CCA bar chart ---- */
+      if (cm.canonical_correlations && cm.canonical_correlations.length > 0) {
+        var ccLabels = cm.canonical_correlations.map(function(_, i) { return 'CC' + (i + 1); });
+        Plotly.newPlot('crossmodality-cca', [{
+          x: ccLabels,
+          y: cm.canonical_correlations,
+          type: 'bar',
+          marker: { color: '#0ea5e9', line: { color: '#0369a1', width: 1 } },
+          hovertemplate: '%{x}<br>Canonical r = %{y:.4f}<extra></extra>',
+        }, {
+          x: [ccLabels[0], ccLabels[ccLabels.length - 1]],
+          y: [cm.mean_canonical_correlation, cm.mean_canonical_correlation],
+          mode: 'lines',
+          line: { color: '#dc2626', width: 2, dash: 'dash' },
+          name: 'Mean',
+          hovertemplate: 'Mean canonical r = ' + (cm.mean_canonical_correlation || 0).toFixed(4) + '<extra></extra>',
+        }], {
+          ...LAYOUT_BASE,
+          showlegend: true,
+          legend: { x: 0.75, y: 0.95, bgcolor: 'rgba(255,255,255,0.8)' },
+          xaxis: { ...LAYOUT_BASE.xaxis, title: 'Canonical Component' },
+          yaxis: { ...LAYOUT_BASE.yaxis, title: 'Canonical Correlation', range: [0, 1] },
+        }, CFG);
+      }
+
+      /* ---- Residual batch η² grouped bar ---- */
+      if (cm.residual_batch && cm.residual_batch.length > 0) {
+        var rPCs = cm.residual_batch.map(function(r) { return r.NGS_PC; });
+        Plotly.newPlot('crossmodality-residual', [{
+          x: rPCs,
+          y: cm.residual_batch.map(function(r) { return r.eta2_original; }),
+          name: 'Before adjustment',
+          type: 'bar',
+          marker: { color: '#D95F02' },
+          hovertemplate: '%{x}<br>\u03b7\u00b2(batch) = %{y:.4f}<extra>Before</extra>',
+        }, {
+          x: rPCs,
+          y: cm.residual_batch.map(function(r) { return r.eta2_residual; }),
+          name: 'After array-PC adjustment',
+          type: 'bar',
+          marker: { color: '#1B9E77' },
+          hovertemplate: '%{x}<br>\u03b7\u00b2(batch|residual) = %{y:.4f}<extra>After</extra>',
+        }], {
+          ...LAYOUT_BASE,
+          barmode: 'group',
+          showlegend: true,
+          legend: { x: 0.55, y: 0.95, bgcolor: 'rgba(255,255,255,0.8)',
+                    bordercolor: '#cbd5e1', borderwidth: 1 },
+          xaxis: { ...LAYOUT_BASE.xaxis, title: 'NGS Principal Component', tickangle: -45 },
+          yaxis: { ...LAYOUT_BASE.yaxis, title: '\u03b7\u00b2 (RELEASE_BATCH)' },
+          margin: { ...LAYOUT_BASE.margin, b: 80 },
+        }, CFG);
+      }
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  HEATMAP                                                            */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -3168,6 +3470,11 @@ def generate_report(
     if within_ancestry_results is None:
         print("[06]   within_ancestry_batch.tsv not found — skipping within-ancestry section")
 
+    print("[06] Loading cross-modality benchmark results …")
+    crossmodality_results = _load_crossmodality(output_dir)
+    if crossmodality_results is None:
+        print("[06]   crossmodality TSVs not found — skipping cross-modality section")
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -3181,6 +3488,7 @@ def generate_report(
         ancestry_distance_results,
         variance_partitioning_results,
         within_ancestry_results,
+        crossmodality_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)

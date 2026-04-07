@@ -66,7 +66,12 @@ python "${SCRIPT_DIR}/scripts/09_within_ancestry_batch.py" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
 
 echo ""
-echo "[Step 10] Interactive HTML report …"
+echo "[Step 10] Cross-modality benchmark (NGS-PCA vs array PCs) …"
+python "${SCRIPT_DIR}/scripts/10_crossmodality_benchmark.py" \
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}"
+
+echo ""
+echo "[Step 11] Interactive HTML report …"
 python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
