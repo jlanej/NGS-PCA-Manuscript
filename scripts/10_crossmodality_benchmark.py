@@ -62,9 +62,15 @@ def _load_array_pcs(data_dir: str) -> pd.DataFrame:
         f"PC{i}" for i in range(1, 21)
     ]
     df = pd.read_csv(path, sep="\t", usecols=cols_needed)
+    # Remove stray header rows that appear when files are concatenated
+    df = df[df["sample_id"] != "IID"].copy()
     # Retain only samples that participated in the array PCA computation
+    df["pre_pca_excluded"] = pd.to_numeric(df["pre_pca_excluded"], errors="coerce")
     df = df[df["pre_pca_excluded"] == 0].copy()
     df = df.drop(columns=["pre_pca_excluded"])
+    # Ensure PC columns are numeric
+    for i in range(1, 21):
+        df[f"PC{i}"] = pd.to_numeric(df[f"PC{i}"], errors="coerce")
     rename = {f"PC{i}": f"ARRAY_PC{i}" for i in range(1, 21)}
     df = df.rename(columns=rename)
     return df
@@ -96,9 +102,9 @@ def _compute_pc_correlations(
     records = []
     for nc in ngs_cols:
         for ac in array_cols:
-            x = df[nc].values
-            y = df[ac].values
-            mask = ~(np.isnan(x) | np.isnan(y))
+            x = pd.to_numeric(df[nc], errors="coerce").values
+            y = pd.to_numeric(df[ac], errors="coerce").values
+            mask = np.isfinite(x) & np.isfinite(y)
             if mask.sum() < 3:
                 records.append(
                     dict(

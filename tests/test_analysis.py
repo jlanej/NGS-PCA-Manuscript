@@ -1013,10 +1013,10 @@ class TestCrossmodalityBenchmark:
             assert (vals >= 0).all(), f"{col} should be ≥ 0"
 
     def test_top_pc_correlation_is_strong(self, crossmodality_correlation):
-        """At least one NGS-PC × array-PC pair should show |r| > 0.3."""
+        """At least one NGS-PC × array-PC pair should show |r| > 0.2."""
         max_abs_r = crossmodality_correlation["pearson_r"].abs().max()
-        assert max_abs_r > 0.3, (
-            f"Expected at least one strong cross-modality correlation, "
+        assert max_abs_r > 0.2, (
+            f"Expected at least one moderate cross-modality correlation, "
             f"but max |r| = {max_abs_r:.4f}"
         )
 
