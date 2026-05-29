@@ -25,7 +25,12 @@ sequencing data.
 │   ├── 02_pca_scatter.py          #   Pairwise PC scatter plots
 │   ├── 03_umap_projection.py      #   UMAP from top PCs
 │   ├── 04_correlation_heatmap.py  #   PC × QC association heatmaps
-│   └── 05_batch_vs_ancestry.py    #   Batch vs ancestry effect sizes
+│   ├── 05_batch_vs_ancestry.py    #   Batch vs ancestry effect sizes
+│   ├── 06_interactive_report.py   #   Interactive HTML summary report
+│   ├── 07–12 …                     #   Permutation, variance partitioning,
+│   │                               #   within-ancestry, cross-modality, etc.
+│   └── 13_genomic_vs_technical.py #   Decisive test: real genomic ancestry
+│                                   #   vs. technical QC artefact (commonality)
 ├── tests/
 │   └── test_analysis.py           # pytest test suite
 ├── run_all.sh                      # Orchestrator script
@@ -108,6 +113,8 @@ apptainer exec \
 | `batch_vs_ancestry.png` | Batch vs ancestry η² grouped bar chart |
 | `batch_vs_ancestry_detail.tsv` | Per-PC batch and ancestry η² |
 | `batch_vs_ancestry_summary.tsv` | Mean and max η² summary |
+| `genomic_vs_technical.tsv` | Per-PC commonality decomposition: real genomic ancestry (genotype PCs) vs. technical QC variance, with unique-genomic permutation p-values |
+| `genomic_vs_technical.png` | Decisive figure: variance partition per PC and genotype-ancestry signal surviving QC adjustment |
 
 ## CI / CD
 

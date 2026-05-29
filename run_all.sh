@@ -81,7 +81,13 @@ python "${SCRIPT_DIR}/scripts/12_robust_qc_variance.py" \
     --output-dir "${OUTPUT_DIR}"
 
 echo ""
-echo "[Step 13] Interactive HTML report …"
+echo "[Step 13] Genomic vs. technical commonality test (real ancestry vs. QC artefact) …"
+python "${SCRIPT_DIR}/scripts/13_genomic_vs_technical.py" \
+    --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
+    --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
+
+echo ""
+echo "[Step 14] Interactive HTML report …"
 python "${SCRIPT_DIR}/scripts/06_interactive_report.py" \
     --data-dir "${DATA_DIR}" --output-dir "${OUTPUT_DIR}" \
     --n-permutations "${NGSPCA_PERMUTATIONS:-5000}"
