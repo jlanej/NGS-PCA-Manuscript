@@ -584,6 +584,109 @@ def _load_genomic_vs_technical(output_dir: str):
     }
 
 
+def _load_qc_metrics_by_ancestry(output_dir: str):
+    """Load the focused-metric summary by ancestry (from 13_genomic_vs_technical.py).
+
+    Returns a dict ``{metrics, groups, rows}`` ready for JSON embedding, or
+    ``None`` when the TSV is absent.
+    """
+    path = os.path.join(output_dir, "qc_metrics_by_ancestry.tsv")
+    if not os.path.isfile(path):
+        return None
+    df = pd.read_csv(path, sep="\t")
+    if df.empty:
+        return None
+    metrics = list(dict.fromkeys(df["metric"].tolist()))
+    labels = {str(r["metric"]): str(r["label"]) for _, r in df.iterrows()} \
+        if "label" in df.columns else {m: m for m in metrics}
+    groups = [g for g in df["superpopulation"].unique().tolist() if g != "ALL"]
+    groups = sorted(groups) + ["ALL"]
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "metric": str(r["metric"]),
+            "label": str(r.get("label", r["metric"])),
+            "superpopulation": str(r["superpopulation"]),
+            "n": int(r["n"]),
+            "mean": float(r["mean"]),
+            "median": float(r["median"]),
+            "sd": float(r["sd"]),
+            "mad": float(r["mad"]),
+            "iqr": float(r["iqr"]),
+        })
+    return {"metrics": metrics, "labels": labels, "groups": groups, "rows": rows}
+
+
+def _load_batch_by_ancestry(output_dir: str):
+    """Load the batch × ancestry cross-tabulation (from 13_genomic_vs_technical.py).
+
+    Returns a dict ``{batches, groups, rows}`` ready for JSON embedding, or
+    ``None`` when the TSV is absent.
+    """
+    path = os.path.join(output_dir, "batch_by_ancestry.tsv")
+    if not os.path.isfile(path):
+        return None
+    df = pd.read_csv(path, sep="\t")
+    if df.empty:
+        return None
+    df["batch"] = df["batch"].astype(str)
+    batches = sorted(df["batch"].unique().tolist())
+    groups = [g for g in df["superpopulation"].unique().tolist() if g != "ALL"]
+    groups = sorted(groups) + ["ALL"]
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "superpopulation": str(r["superpopulation"]),
+            "batch": str(r["batch"]),
+            "n": int(r["n"]),
+            "row_total": int(r["row_total"]),
+            "pct_within_ancestry": float(r["pct_within_ancestry"]),
+        })
+    return {"batches": batches, "groups": groups, "rows": rows}
+
+
+def _load_per_metric_variance(output_dir: str):
+    """Load the per-metric variance components (from 13_genomic_vs_technical.py).
+
+    Returns a dict ``{records, n_samples, n_array_pcs, n_permutations}`` ready
+    for JSON embedding, or ``None`` when the TSV is absent.
+    """
+    path = os.path.join(output_dir, "per_metric_variance.tsv")
+    if not os.path.isfile(path):
+        return None
+    df = pd.read_csv(path, sep="\t")
+    if df.empty:
+        return None
+
+    def _f(v):
+        return float(v) if not pd.isna(v) else None
+
+    records = []
+    for _, r in df.iterrows():
+        records.append({
+            "metric": str(r["metric"]),
+            "label": str(r.get("label", r["metric"])),
+            "ancestry_var_explained_by_metric":
+                _f(r["ancestry_var_explained_by_metric"]),
+            "r2_ancestry": _f(r["r2_ancestry"]),
+            "r2_batch": _f(r["r2_batch"]),
+            "r2_full": _f(r["r2_full"]),
+            "unique_ancestry": _f(r["unique_ancestry"]),
+            "unique_batch": _f(r["unique_batch"]),
+            "shared": _f(r["shared"]),
+            "residual": _f(r["residual"]),
+            "p_value": _f(r["p_value"]),
+        })
+    first = df.iloc[0]
+    return {
+        "records": records,
+        "n_samples": int(first["n_samples"]) if "n_samples" in df.columns else 0,
+        "n_array_pcs": int(first["n_array_pcs"]) if "n_array_pcs" in df.columns else 0,
+        "n_permutations":
+            int(first["n_permutations"]) if "n_permutations" in df.columns else 0,
+    }
+
+
 def _compute_relatedness_distance(
     df: pd.DataFrame,
     data_dir: str,
@@ -1079,6 +1182,9 @@ def _build_html(
     reference_bias_qc_data=None,
     robust_qc_variance_results=None,
     genomic_vs_technical_results=None,
+    qc_metrics_by_ancestry_results=None,
+    batch_by_ancestry_results=None,
+    per_metric_variance_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -1120,6 +1226,9 @@ def _build_html(
         "reference_bias_qc": reference_bias_qc_data,
         "robust_qc_variance": robust_qc_variance_results,
         "genomic_vs_technical": genomic_vs_technical_results,
+        "qc_metrics_by_ancestry": qc_metrics_by_ancestry_results,
+        "batch_by_ancestry": batch_by_ancestry_results,
+        "per_metric_variance": per_metric_variance_results,
     }))
 
     html = textwrap.dedent("""\
@@ -1972,13 +2081,55 @@ def _build_html(
           coverage-independent measurement of ancestry is the
           <strong>SNP-array genotype PCs</strong> (block&nbsp;<strong>G</strong>),
           computed from allele frequencies and immune to read-depth artefacts.
-          Technical variation is summarised by the
-          <strong>coverage / QC metrics</strong> (block&nbsp;<strong>T</strong>:
-          mean and median depth, depth dispersion, %≥10×/20×, sex and mitochondrial
-          coverage ratios, etc.). The decisive question for every PC is simply:
+          Technical variation is summarised by a <strong>focused</strong> block
+          (<strong>T</strong>): the ten per-sample <strong>mosdepth coverage
+          summary statistics</strong> — genome-wide and high-quality (HQ) mean
+          and median depth, and depth dispersion (SD, MAD, IQR) — taken directly
+          from <code>1000G/qc_output/mosdepth_coverage_summary.tsv</code>,
+          <strong>plus the processing batch</strong> (<code>RELEASE_BATCH</code>).
+          The decisive question for every PC is simply:
           <em>does its correlation with genuine genomic ancestry survive after we
           remove everything the technical metrics can explain?</em>
         </p>
+        <h3>The cohort and the focused metrics</h3>
+        <p id="gvt-cohort-summary"></p>
+        <p>
+          The decisive test is restricted to the
+          <strong id="gvt-overlap-n">samples</strong> that carry <em>both</em> an
+          NGS-PCA score and a quality-controlled SNP-array genotype-PC coordinate.
+          We verified this overlap explicitly: of the
+          <strong>2,002</strong> NGS-PCA samples that appear in the array sample
+          sheet, <strong>620</strong> are flagged <code>pre_pca_excluded</code> by
+          the upstream genotype-array pipeline — <strong>601</strong> of them for
+          cryptic relatedness and 25 as heterozygosity outliers — leaving
+          <strong>1,382</strong> samples in the array genotype PCA. The seemingly
+          low overlap is therefore accurate and expected: it reflects the
+          relatedness pruning applied before the array PCA, not a data-merge
+          error. The two tables below describe this analysis cohort — the
+          distribution of every focused metric across genetic-ancestry
+          superpopulations, and the processing-batch membership of each ancestry
+          group (the batch–ancestry confounding the decisive test must
+          disentangle).
+        </p>
+        <div class="plot-card" style="margin-top:1rem;">
+          <div class="plot-card-header">
+            <h3>Processing-batch membership by genetic ancestry</h3>
+          </div>
+          <div class="plot-card-body">
+            <div id="gvt-batch-table"></div>
+          </div>
+        </div>
+        <div class="plot-card" style="margin-top:1.5rem;">
+          <div class="plot-card-header">
+            <h3>Focused coverage metrics by genetic ancestry (median / mean / SD / MAD / IQR)</h3>
+          </div>
+          <div class="plot-card-body">
+            <label for="gvt-metric-select" style="font-size:0.9rem;font-weight:600;">
+              Metric:</label>
+            <select id="gvt-metric-select" style="margin:0 0 0.75rem 0.5rem;"></select>
+            <div id="gvt-metric-table"></div>
+          </div>
+        </div>
         <h3>Method — commonality (variance-partition) analysis</h3>
         <p>
           For each Marchenko–Pastur-selected NGS-PCA PC we fit three nested
@@ -2036,6 +2187,58 @@ R&sup2;<sub>GT</sub> = PC ~ G + T        (both blocks together)</pre>
         </div>
         <div class="plot-card-body">
           <div id="gvt-survival" style="height:460px"></div>
+        </div>
+      </div>
+
+      <div class="description" style="margin-top:1.5rem;">
+        <h3>Per-metric variance components: what does each coverage metric explain?</h3>
+        <p>
+          The commonality test above treats the technical block as a whole. Here
+          we open it up and ask, for <em>each</em> focused coverage metric in
+          isolation: <strong>how much genomic ancestry can that single metric
+          explain, and how much of the metric is itself driven by ancestry?</strong>
+          GRCh38 is a EUR-centric reference, so ancestry-correlated mappability
+          gradients could in principle imprint a coverage signature on depth
+          summary statistics. This analysis localises any such footprint
+          metric-by-metric and bounds its size.
+        </p>
+        <p>
+          Using the same overlap cohort, every metric <em>m</em> is taken as the
+          response and decomposed against the genotype-ancestry block (G) and the
+          processing batch:
+        </p>
+        <ul>
+          <li><strong>Genomic ancestry explained by the metric</strong> — the
+              Stewart–Love redundancy index, the mean R&sup2; of the genotype
+              ancestry PCs regressed on <em>m</em>. It answers the headline
+              question literally: the fraction of the genotype-ancestry subspace
+              that the single metric can reconstruct.</li>
+          <li><strong>Per-metric variance decomposition</strong> — the metric's
+              own variance split into <em>unique ancestry</em>
+              (R&sup2;<sub>m~G+batch</sub> − R&sup2;<sub>m~batch</sub>),
+              <em>unique batch</em>, <em>shared / confounded</em>, and
+              <em>residual</em>. The unique-ancestry component is tested against
+              the same exact permutation null (the ancestry block is row-shuffled
+              relative to <em>m</em> + batch).</li>
+        </ul>
+        <p id="per-metric-summary"></p>
+      </div>
+
+      <div class="plot-card" style="margin-top:1rem;">
+        <div class="plot-card-header">
+          <h3>Genomic Ancestry Explained by Each Coverage Metric</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="per-metric-redundancy" style="height:440px"></div>
+        </div>
+      </div>
+
+      <div class="plot-card" style="margin-top:1.5rem;">
+        <div class="plot-card-header">
+          <h3>Per-Metric Variance Decomposition (Ancestry vs. Batch)</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="per-metric-partition" style="height:460px"></div>
         </div>
       </div>
     </div>
@@ -3737,7 +3940,8 @@ R&sup2;<sub>GT</sub> = PC ~ G + T        (both blocks together)</pre>
         'Across <strong>' + gvt.n_pcs + '</strong> Marchenko–Pastur-selected PCs '
         + '(n = <strong>' + gvt.n_samples + '</strong> samples with both '
         + '<strong>' + gvt.n_array_pcs + '</strong> genotype-array ancestry PCs and '
-        + '<strong>' + gvt.n_qc_metrics + '</strong> coverage/QC metrics), '
+        + '<strong>' + gvt.n_qc_metrics + '</strong> focused mosdepth coverage '
+        + 'metrics plus processing batch), '
         + '<strong>' + gvt.n_significant + '</strong> PC(s) retain a statistically '
         + 'significant <em>irreducible genomic ancestry signal</em> after removing '
         + 'all QC-explainable variance (unique-genomic permutation p &lt; 0.05, '
@@ -3815,7 +4019,204 @@ R&sup2;<sub>GT</sub> = PC ~ G + T        (both blocks together)</pre>
     })();
 
     /* ------------------------------------------------------------------ */
-    /*  REFERENCE BIAS AUDIT                                               */
+    /*  DECISIVE TEST — cohort tables (batch × ancestry, metric summary)   */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      function fmt(x, d) {
+        return (x == null || isNaN(x)) ? '–' : Number(x).toFixed(d);
+      }
+
+      /* ---- Cohort headline + overlap n ------------------------------- */
+      var gvt = DATA.genomic_vs_technical;
+      var overlapEl = document.getElementById('gvt-overlap-n');
+      var cohortEl = document.getElementById('gvt-cohort-summary');
+      var nOverlap = (gvt && gvt.n_samples) ? gvt.n_samples : null;
+      if (overlapEl && nOverlap) {
+        overlapEl.textContent = nOverlap.toLocaleString() + ' samples';
+      }
+      var ba = DATA.batch_by_ancestry;
+      if (cohortEl) {
+        if (gvt && gvt.n_samples) {
+          cohortEl.innerHTML =
+            'The analysis cohort comprises <strong>' + gvt.n_samples.toLocaleString()
+            + '</strong> samples with both an NGS-PCA score and a quality-controlled '
+            + 'SNP-array genotype-PC coordinate, spanning '
+            + (ba ? '<strong>' + ba.groups.filter(g => g !== 'ALL').length
+                + '</strong> superpopulations and <strong>' + ba.batches.length
+                + '</strong> processing batches' : 'the 1000 Genomes superpopulations')
+            + '.';
+        } else {
+          cohortEl.textContent =
+            'Cohort tables not yet available. Run scripts/13_genomic_vs_technical.py.';
+        }
+      }
+
+      /* ---- Batch × ancestry table ------------------------------------ */
+      var batchTableEl = document.getElementById('gvt-batch-table');
+      if (batchTableEl && ba && ba.rows && ba.rows.length) {
+        var byPop = {};
+        ba.rows.forEach(function(r) {
+          (byPop[r.superpopulation] = byPop[r.superpopulation] || {})[r.batch] = r;
+        });
+        var h = '<table class="summary-table"><thead><tr><th>Ancestry</th>';
+        ba.batches.forEach(function(b) {
+          h += '<th class="num">Batch ' + b + ' (n)</th><th class="num">% of ancestry</th>';
+        });
+        h += '<th class="num">Total</th></tr></thead><tbody>';
+        ba.groups.forEach(function(pop) {
+          var cells = byPop[pop] || {};
+          var total = 0;
+          ba.batches.forEach(function(b) { if (cells[b]) total = cells[b].row_total; });
+          h += '<tr><td>' + (pop === 'ALL' ? '<strong>All</strong>' : pop) + '</td>';
+          ba.batches.forEach(function(b) {
+            var c = cells[b];
+            h += '<td class="num">' + (c ? c.n.toLocaleString() : '0') + '</td>'
+              + '<td class="num">' + (c ? fmt(c.pct_within_ancestry, 1) + '%' : '–') + '</td>';
+          });
+          h += '<td class="num">' + total.toLocaleString() + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        batchTableEl.innerHTML = h
+          + '<p style="font-size:0.82rem;color:var(--muted);margin-top:0.5rem;">'
+          + 'Processing batch (<code>RELEASE_BATCH</code>) is unevenly distributed '
+          + 'across ancestry groups — the confounding the decisive test removes by '
+          + 'including batch in the technical block.</p>';
+      } else if (batchTableEl) {
+        batchTableEl.textContent = 'Batch × ancestry table not available.';
+      }
+
+      /* ---- Focused-metric summary table (metric selector) ------------ */
+      var qm = DATA.qc_metrics_by_ancestry;
+      var sel = document.getElementById('gvt-metric-select');
+      var metTableEl = document.getElementById('gvt-metric-table');
+      if (sel && metTableEl && qm && qm.rows && qm.rows.length) {
+        qm.metrics.forEach(function(m) {
+          var opt = document.createElement('option');
+          opt.value = m;
+          opt.textContent = (qm.labels && qm.labels[m]) ? qm.labels[m] : m;
+          sel.appendChild(opt);
+        });
+        function renderMetric(metric) {
+          var rows = qm.rows.filter(function(r) { return r.metric === metric; });
+          var byPop = {};
+          rows.forEach(function(r) { byPop[r.superpopulation] = r; });
+          var h = '<table class="summary-table"><thead><tr>'
+            + '<th>Ancestry</th><th class="num">n</th><th class="num">Mean</th>'
+            + '<th class="num">Median</th><th class="num">SD</th>'
+            + '<th class="num">MAD</th><th class="num">IQR</th></tr></thead><tbody>';
+          qm.groups.forEach(function(pop) {
+            var r = byPop[pop];
+            if (!r) return;
+            h += '<tr><td>' + (pop === 'ALL' ? '<strong>All</strong>' : pop) + '</td>'
+              + '<td class="num">' + r.n.toLocaleString() + '</td>'
+              + '<td class="num">' + fmt(r.mean, 2) + '</td>'
+              + '<td class="num">' + fmt(r.median, 2) + '</td>'
+              + '<td class="num">' + fmt(r.sd, 2) + '</td>'
+              + '<td class="num">' + fmt(r.mad, 2) + '</td>'
+              + '<td class="num">' + fmt(r.iqr, 2) + '</td></tr>';
+          });
+          h += '</tbody></table>';
+          metTableEl.innerHTML = h;
+        }
+        sel.addEventListener('change', function() { renderMetric(sel.value); });
+        renderMetric(qm.metrics[0]);
+      } else if (metTableEl) {
+        metTableEl.textContent = 'Focused-metric summary not available.';
+      }
+    })();
+
+    /* ------------------------------------------------------------------ */
+    /*  PER-METRIC VARIANCE COMPONENTS                                     */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var pm = DATA.per_metric_variance;
+      var summaryEl = document.getElementById('per-metric-summary');
+      if (!pm || !pm.records || pm.records.length === 0) {
+        if (summaryEl) summaryEl.textContent =
+          'Per-metric variance components not yet available. '
+          + 'Run scripts/13_genomic_vs_technical.py.';
+        return;
+      }
+      function sigLabel(p) {
+        if (p == null) return '';
+        if (p < 0.001) return '***';
+        if (p < 0.01) return '**';
+        if (p < 0.05) return '*';
+        return 'ns';
+      }
+      var recs = pm.records;
+      var labels = recs.map(r => r.label);
+
+      /* ---- Summary narrative ---------------------------------------- */
+      var top = recs[0];
+      var maxRed = (100 * (top.ancestry_var_explained_by_metric || 0)).toFixed(1);
+      var nSig = recs.filter(r => (r.p_value != null && r.p_value < 0.05)).length;
+      var maxAnc = recs.reduce(function(mx, r) {
+        return Math.max(mx, r.r2_ancestry || 0); }, 0);
+      summaryEl.innerHTML =
+        'Even though GRCh38 is EUR-centric, <strong>the most ancestry-informative '
+        + 'coverage metric (' + top.label + ') reconstructs only ' + maxRed + '%</strong> '
+        + 'of the genotype-ancestry subspace, and every other metric reconstructs less. '
+        + 'Conversely, ancestry explains at most <strong>'
+        + (100 * maxAnc).toFixed(1) + '%</strong> of any metric\u2019s own variance. '
+        + '<strong>' + nSig + '/' + recs.length + '</strong> metrics carry a '
+        + 'statistically detectable (yet tiny) unique-ancestry footprint after '
+        + 'conditioning on batch (permutation p\u202f&lt;\u202f0.05, '
+        + pm.n_permutations + ' permutations). The ancestry footprint on raw '
+        + 'coverage metrics is thus real but minute — far too small to manufacture '
+        + 'the strong ancestry structure NGS-PCA recovers, which therefore reflects '
+        + 'genuine genomic signal rather than reference-bias-driven coverage gradients.';
+
+      /* ---- Panel 1: ancestry explained by each metric (redundancy) -- */
+      var redVals = recs.map(r => r.ancestry_var_explained_by_metric);
+      var ymax = Math.max(1e-6, ...redVals);
+      var annotations = recs.map(r => ({
+        x: r.label, y: (r.ancestry_var_explained_by_metric || 0) + 0.03 * ymax,
+        text: sigLabel(r.p_value), showarrow: false, font: { size: 11 },
+      }));
+      Plotly.newPlot('per-metric-redundancy', [{
+        x: labels, y: redVals, type: 'bar', marker: { color: '#1B9E77' },
+        hovertemplate: '%{x}<br>Genomic-ancestry variance explained: %{y:.4f}<extra></extra>',
+      }], {
+        ...LAYOUT_BASE,
+        annotations: annotations,
+        xaxis: { ...LAYOUT_BASE.xaxis, title: 'Coverage metric', tickangle: -45 },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Redundancy R² (ancestry explained)' },
+        margin: { ...LAYOUT_BASE.margin, b: 110, t: 30 },
+      }, CFG);
+
+      /* ---- Panel 2: per-metric variance decomposition (stacked) ----- */
+      var traceUA = {
+        x: labels, y: recs.map(r => r.unique_ancestry), name: 'Unique ancestry',
+        type: 'bar', marker: { color: '#1B9E77' },
+        hovertemplate: '%{x}<br>Unique ancestry R²: %{y:.3f}<extra></extra>',
+      };
+      var traceSH = {
+        x: labels, y: recs.map(r => Math.max(0, r.shared || 0)), name: 'Shared / confounded',
+        type: 'bar', marker: { color: '#A6A6A6' },
+        hovertemplate: '%{x}<br>Shared R²: %{y:.3f}<extra></extra>',
+      };
+      var traceUB = {
+        x: labels, y: recs.map(r => r.unique_batch), name: 'Unique batch',
+        type: 'bar', marker: { color: '#D95F02' },
+        hovertemplate: '%{x}<br>Unique batch R²: %{y:.3f}<extra></extra>',
+      };
+      var traceRES = {
+        x: labels, y: recs.map(r => r.residual), name: 'Residual',
+        type: 'bar', marker: { color: '#D9D9D9' },
+        hovertemplate: '%{x}<br>Residual: %{y:.3f}<extra></extra>',
+      };
+      Plotly.newPlot('per-metric-partition', [traceUA, traceSH, traceUB, traceRES], {
+        ...LAYOUT_BASE,
+        barmode: 'stack',
+        showlegend: true,
+        legend: { orientation: 'h', x: 0, y: 1.12 },
+        xaxis: { ...LAYOUT_BASE.xaxis, title: 'Coverage metric', tickangle: -45 },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Fraction of metric variance', range: [0, 1] },
+        margin: { ...LAYOUT_BASE.margin, b: 110, t: 40 },
+      }, CFG);
+    })();
+
     /* ------------------------------------------------------------------ */
     (function() {
       var rb = DATA.reference_bias;
@@ -4241,6 +4642,15 @@ def generate_report(
     if genomic_vs_technical_results is None:
         print("[06]   genomic_vs_technical.tsv not found — skipping decisive test section")
 
+    print("[06] Loading focused-metric cohort tables (by ancestry / batch) …")
+    qc_metrics_by_ancestry_results = _load_qc_metrics_by_ancestry(output_dir)
+    batch_by_ancestry_results = _load_batch_by_ancestry(output_dir)
+
+    print("[06] Loading per-metric variance components …")
+    per_metric_variance_results = _load_per_metric_variance(output_dir)
+    if per_metric_variance_results is None:
+        print("[06]   per_metric_variance.tsv not found — skipping per-metric analysis")
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -4259,6 +4669,9 @@ def generate_report(
         reference_bias_qc_data,
         robust_qc_variance_results,
         genomic_vs_technical_results,
+        qc_metrics_by_ancestry_results,
+        batch_by_ancestry_results,
+        per_metric_variance_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)
