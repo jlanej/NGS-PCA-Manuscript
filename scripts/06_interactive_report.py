@@ -529,6 +529,61 @@ def _load_variance_partitioning(output_dir: str):
     return records
 
 
+def _load_genomic_vs_technical(output_dir: str):
+    """Load the genomic-vs-technical commonality test from 13_genomic_vs_technical.py.
+
+    For each NGS-PCA PC this partitions variance between the genotype-array
+    ancestry block (G, real genomic signal) and the coverage/QC block
+    (T, technical signal) and asks whether the genotype-ancestry correlation
+    survives QC adjustment (unique genomic component, permutation p-value).
+
+    Returns a dict ready for JSON embedding, or None if the file is absent.
+    """
+    tsv_path = os.path.join(output_dir, "genomic_vs_technical.tsv")
+    if not os.path.isfile(tsv_path):
+        return None
+    df = pd.read_csv(tsv_path, sep="\t")
+    if df.empty:
+        return None
+
+    def _f(v):
+        return float(v) if not pd.isna(v) else None
+
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "PC": str(row["PC"]),
+            "r2_genomic": _f(row["r2_genomic"]),
+            "r2_technical": _f(row["r2_technical"]),
+            "r2_full": _f(row["r2_full"]),
+            "unique_genomic": _f(row["unique_genomic"]),
+            "unique_technical": _f(row["unique_technical"]),
+            "shared": _f(row["shared"]),
+            "retention": _f(row["retention"]),
+            "unique_genomic_corrected": _f(row["unique_genomic_corrected"]),
+            "p_value": _f(row["p_value"]),
+        })
+
+    first = df.iloc[0]
+    n_sig = int((df["p_value"] < 0.05).sum()) if "p_value" in df.columns else 0
+    # Mean retention over PCs whose genotype-ancestry R² is non-trivial, so a
+    # near-zero denominator cannot dominate the headline number.
+    rmask = df["r2_genomic"] > 0.01
+    mean_retention = float(df.loc[rmask, "retention"].clip(0, 1).mean()) \
+        if rmask.any() else None
+
+    return {
+        "records": records,
+        "n_pcs": int(len(df)),
+        "n_significant": n_sig,
+        "n_array_pcs": int(first["n_array_pcs"]) if "n_array_pcs" in df.columns else 0,
+        "n_qc_metrics": int(first["n_qc_metrics"]) if "n_qc_metrics" in df.columns else 0,
+        "n_samples": int(first["n_samples"]) if "n_samples" in df.columns else 0,
+        "n_permutations": int(first["n_permutations"]) if "n_permutations" in df.columns else 0,
+        "mean_retention": mean_retention,
+    }
+
+
 def _compute_relatedness_distance(
     df: pd.DataFrame,
     data_dir: str,
@@ -1023,6 +1078,7 @@ def _build_html(
     reference_bias_results=None,
     reference_bias_qc_data=None,
     robust_qc_variance_results=None,
+    genomic_vs_technical_results=None,
 ):
     """Return a complete HTML string with embedded Plotly charts."""
 
@@ -1063,6 +1119,7 @@ def _build_html(
         "reference_bias": reference_bias_results,
         "reference_bias_qc": reference_bias_qc_data,
         "robust_qc_variance": robust_qc_variance_results,
+        "genomic_vs_technical": genomic_vs_technical_results,
     }))
 
     html = textwrap.dedent("""\
@@ -1373,6 +1430,7 @@ def _build_html(
       <a href="#section-variance-partitioning">Variance Partitioning</a>
       <a href="#section-within-ancestry">Within-Ancestry Batch</a>
       <a href="#section-crossmodality">Cross-Modality</a>
+      <a href="#section-genomic-vs-technical">Genomic vs. Technical</a>
       <a href="#section-refbias">Reference Bias Audit</a>
       <a href="#section-heatmap">PC–QC Associations</a>
     </nav>
@@ -1892,6 +1950,92 @@ def _build_html(
           <div class="plot-card-body">
             <div id="crossmodality-residual" style="height:350px"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Genomic vs. Technical: the decisive test -->
+    <div class="report-section" id="section-genomic-vs-technical">
+      <h2>Real Genomic Ancestry vs. Technical Artefact: The Decisive Test</h2>
+      <div class="description">
+        <h3>Rationale</h3>
+        <p>
+          The preceding sections each address one facet of a single question:
+          <strong>do NGS-PCA components capture ancestry directly via real genomic
+          signal, or do they capture coverage/QC and batch effects that merely
+          <em>correlate</em> with ancestry?</strong> This section settles that
+          question with one intuitive experiment that pits the two competing
+          explanations against each other on equal footing.
+        </p>
+        <p>
+          Ancestry is, by definition, a property of the genome. The gold-standard,
+          coverage-independent measurement of ancestry is the
+          <strong>SNP-array genotype PCs</strong> (block&nbsp;<strong>G</strong>),
+          computed from allele frequencies and immune to read-depth artefacts.
+          Technical variation is summarised by the
+          <strong>coverage / QC metrics</strong> (block&nbsp;<strong>T</strong>:
+          mean and median depth, depth dispersion, %≥10×/20×, sex and mitochondrial
+          coverage ratios, etc.). The decisive question for every PC is simply:
+          <em>does its correlation with genuine genomic ancestry survive after we
+          remove everything the technical metrics can explain?</em>
+        </p>
+        <h3>Method — commonality (variance-partition) analysis</h3>
+        <p>
+          For each Marchenko–Pastur-selected NGS-PCA PC we fit three nested
+          ordinary-least-squares models and decompose the variance:
+        </p>
+        <pre>R&sup2;<sub>G</sub>  = PC ~ G            (genotype-ancestry signal, total)
+R&sup2;<sub>T</sub>  = PC ~ T            (technical signal, total)
+R&sup2;<sub>GT</sub> = PC ~ G + T        (both blocks together)</pre>
+        <ul>
+          <li><strong>Unique genomic</strong>
+              U<sub>G</sub> = R&sup2;<sub>GT</sub> − R&sup2;<sub>T</sub> —
+              ancestry signal that QC <em>cannot</em> account for &rarr;
+              <strong>real genomic signal</strong>.</li>
+          <li><strong>Unique technical</strong>
+              U<sub>T</sub> = R&sup2;<sub>GT</sub> − R&sup2;<sub>G</sub> —
+              technical signal that ancestry cannot account for &rarr;
+              <strong>QC / batch artefact</strong>.</li>
+          <li><strong>Shared / confounded</strong>
+              C = R&sup2;<sub>G</sub> + R&sup2;<sub>T</sub> − R&sup2;<sub>GT</sub> —
+              the ancestry–QC confounding.</li>
+        </ul>
+        <p>
+          The decisive scalar is each PC's <strong>genomic retention</strong>,
+          U<sub>G</sub> / R&sup2;<sub>G</sub>: the fraction of its genotype-ancestry
+          correlation that is independent of all QC metrics. Retention&nbsp;≈&nbsp;1
+          means the ancestry correlation is irreducible genomic signal; retention&nbsp;≈&nbsp;0
+          means it is entirely mediated by QC (the PC captures technical variation
+          that happens to track ancestry).
+        </p>
+        <p>
+          Because adding any block of predictors inflates R², we test U<sub>G</sub>
+          against a <strong>permutation null</strong>: the genotype block is
+          row-shuffled relative to the PC&nbsp;+&nbsp;QC data, breaking the genomic
+          association while preserving the technical association and the predictor
+          count. This yields an exact one-sided empirical <em>p</em>-value for
+          U<sub>G</sub> that is robust to the number of genotype predictors.
+          Results are generated by <code>scripts/13_genomic_vs_technical.py</code>.
+        </p>
+        <h3>Results</h3>
+        <p id="genomic-vs-technical-summary"></p>
+      </div>
+
+      <div class="plot-card">
+        <div class="plot-card-header">
+          <h3>Variance Partition per PC: Genotype Ancestry vs. Coverage QC</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="gvt-partition" style="height:480px"></div>
+        </div>
+      </div>
+
+      <div class="plot-card" style="margin-top:1.5rem;">
+        <div class="plot-card-header">
+          <h3>Does the Ancestry Signal Survive QC Adjustment?</h3>
+        </div>
+        <div class="plot-card-body">
+          <div id="gvt-survival" style="height:460px"></div>
         </div>
       </div>
     </div>
@@ -3567,6 +3711,110 @@ def _build_html(
     })();
 
     /* ------------------------------------------------------------------ */
+    /*  GENOMIC vs. TECHNICAL — the decisive test                          */
+    /* ------------------------------------------------------------------ */
+    (function() {
+      var gvt = DATA.genomic_vs_technical;
+      var summaryEl = document.getElementById('genomic-vs-technical-summary');
+      if (!gvt || !gvt.records || gvt.records.length === 0) {
+        if (summaryEl) {
+          summaryEl.textContent =
+            'Results not yet available. Run scripts/13_genomic_vs_technical.py '
+            + '(requires array genotype PCs in 1000G/illumina_idat_processing/).';
+        }
+        return;
+      }
+
+      var recs = gvt.records;
+      var pcs = recs.map(r => r.PC);
+
+      /* ---- Summary narrative ---------------------------------------- */
+      var meanRet = (gvt.mean_retention != null)
+        ? (100 * gvt.mean_retention).toFixed(0) + '%' : 'n/a';
+      var nArtefact = recs.filter(
+        r => (r.p_value != null && r.p_value >= 0.05)).length;
+      summaryEl.innerHTML =
+        'Across <strong>' + gvt.n_pcs + '</strong> Marchenko–Pastur-selected PCs '
+        + '(n = <strong>' + gvt.n_samples + '</strong> samples with both '
+        + '<strong>' + gvt.n_array_pcs + '</strong> genotype-array ancestry PCs and '
+        + '<strong>' + gvt.n_qc_metrics + '</strong> coverage/QC metrics), '
+        + '<strong>' + gvt.n_significant + '</strong> PC(s) retain a statistically '
+        + 'significant <em>irreducible genomic ancestry signal</em> after removing '
+        + 'all QC-explainable variance (unique-genomic permutation p &lt; 0.05, '
+        + gvt.n_permutations + ' permutations), while <strong>' + nArtefact
+        + '</strong> show no surviving genomic signal — their ancestry correlation '
+        + 'is fully explained by technical metrics. On PCs with appreciable '
+        + 'genotype-ancestry correlation, a mean of <strong>' + meanRet + '</strong> '
+        + 'of that correlation survives QC adjustment. Interpretation: PCs whose bars '
+        + 'are dominated by orange (unique technical) capture batch/QC artefacts; PCs '
+        + 'with significant green (unique genomic) capture ancestry via real genomic signal.';
+
+      function sigLabel(p) {
+        if (p == null) return '';
+        if (p < 0.001) return '***';
+        if (p < 0.01) return '**';
+        if (p < 0.05) return '*';
+        return 'ns';
+      }
+
+      /* ---- Panel 1: stacked commonality partition ------------------- */
+      var traceUG = {
+        x: pcs, y: recs.map(r => r.unique_genomic), name: 'Unique genomic (real ancestry)',
+        type: 'bar', marker: { color: '#1B9E77' },
+        hovertemplate: '%{x}<br>Unique genomic R²: %{y:.3f}<extra></extra>',
+      };
+      var traceShared = {
+        x: pcs, y: recs.map(r => Math.max(0, r.shared || 0)), name: 'Shared / confounded',
+        type: 'bar', marker: { color: '#A6A6A6' },
+        hovertemplate: '%{x}<br>Shared R²: %{y:.3f}<extra></extra>',
+      };
+      var traceUT = {
+        x: pcs, y: recs.map(r => r.unique_technical), name: 'Unique technical (QC/batch)',
+        type: 'bar', marker: { color: '#D95F02' },
+        hovertemplate: '%{x}<br>Unique technical R²: %{y:.3f}<extra></extra>',
+      };
+      Plotly.newPlot('gvt-partition', [traceUG, traceShared, traceUT], {
+        ...LAYOUT_BASE,
+        barmode: 'stack',
+        showlegend: true,
+        legend: { orientation: 'h', x: 0, y: 1.12 },
+        xaxis: { ...LAYOUT_BASE.xaxis, title: 'NGS Principal Component', tickangle: -45 },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Variance explained (R²)' },
+        margin: { ...LAYOUT_BASE.margin, b: 80, t: 40 },
+      }, CFG);
+
+      /* ---- Panel 2: ancestry signal before vs. after QC adjustment -- */
+      var ymax = Math.max(1e-6, ...recs.map(r => r.r2_genomic || 0));
+      var annotations = recs.map(r => ({
+        x: r.PC, y: (r.unique_genomic || 0) + 0.03 * ymax,
+        text: sigLabel(r.p_value), showarrow: false, font: { size: 11 },
+      }));
+      var traceRaw = {
+        x: pcs, y: recs.map(r => r.r2_genomic), name: 'R² genotype-ancestry (raw)',
+        type: 'bar', marker: { color: 'rgba(27,158,119,0.4)' },
+        hovertemplate: '%{x}<br>Raw genotype-ancestry R²: %{y:.3f}<extra></extra>',
+      };
+      var traceSurv = {
+        x: pcs, y: recs.map(r => r.unique_genomic),
+        name: 'Surviving QC adjustment (unique genomic)',
+        type: 'bar', marker: { color: '#1B9E77' },
+        hovertemplate: '%{x}<br>Unique genomic R²: %{y:.3f}<br>'
+          + 'retention: %{customdata}<extra></extra>',
+        customdata: recs.map(r => (r.retention != null ? r.retention.toFixed(2) : 'n/a')),
+      };
+      Plotly.newPlot('gvt-survival', [traceRaw, traceSurv], {
+        ...LAYOUT_BASE,
+        barmode: 'group',
+        showlegend: true,
+        legend: { orientation: 'h', x: 0, y: 1.12 },
+        annotations: annotations,
+        xaxis: { ...LAYOUT_BASE.xaxis, title: 'NGS Principal Component', tickangle: -45 },
+        yaxis: { ...LAYOUT_BASE.yaxis, title: 'Genotype-ancestry R²' },
+        margin: { ...LAYOUT_BASE.margin, b: 80, t: 40 },
+      }, CFG);
+    })();
+
+    /* ------------------------------------------------------------------ */
     /*  REFERENCE BIAS AUDIT                                               */
     /* ------------------------------------------------------------------ */
     (function() {
@@ -3988,6 +4236,11 @@ def generate_report(
     if robust_qc_variance_results is None:
         print("[06]   robust_qc_variance.tsv not found — skipping QC variance partitioning")
 
+    print("[06] Loading genomic-vs-technical commonality test results …")
+    genomic_vs_technical_results = _load_genomic_vs_technical(output_dir)
+    if genomic_vs_technical_results is None:
+        print("[06]   genomic_vs_technical.tsv not found — skipping decisive test section")
+
     print("[06] Generating HTML …")
     html = _build_html(
         var_prop, var_cum, n_scree,
@@ -4005,6 +4258,7 @@ def generate_report(
         reference_bias_results,
         reference_bias_qc_data,
         robust_qc_variance_results,
+        genomic_vs_technical_results,
     )
 
     os.makedirs(report_dir, exist_ok=True)

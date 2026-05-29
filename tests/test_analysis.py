@@ -122,6 +122,8 @@ EXPECTED_FILES = [
     "crossmodality_residual_batch.tsv",
     "crossmodality_heatmap.png",
     "crossmodality_scatter.png",
+    "genomic_vs_technical.tsv",
+    "genomic_vs_technical.png",
 ]
 
 
@@ -211,7 +213,7 @@ class TestInteractiveReport:
         for section in ["intro", "scree", "pca", "umap",
                         "confounding", "relatedness", "ancestry-distance",
                         "permutation", "heatmap", "within-ancestry",
-                        "refbias"]:
+                        "refbias", "genomic-vs-technical"]:
             assert f'id="section-{section}"' in content, \
                 f"Report missing section: {section}"
         for removed in ["partitioning", "sex", "batch", "summary"]:
@@ -1270,3 +1272,107 @@ class TestRobustQcVariance:
         assert "unique_batch" in rqv[0], \
             "Each entry should have unique_batch field"
 
+
+
+class TestGenomicVsTechnical:
+    """Tests for the decisive genomic (real ancestry) vs. technical (QC) test."""
+
+    @pytest.fixture(scope="class")
+    def gvt(self):
+        path = os.path.join(OUTPUT_DIR, "genomic_vs_technical.tsv")
+        assert os.path.isfile(path), f"genomic_vs_technical.tsv not found: {path}"
+        return pd.read_csv(path, sep="\t")
+
+    def test_has_expected_columns(self, gvt):
+        expected = {
+            "PC", "r2_genomic", "r2_technical", "r2_full",
+            "unique_genomic", "unique_technical", "shared", "retention",
+            "unique_genomic_corrected", "mean_null_unique_genomic", "p_value",
+            "n_array_pcs", "n_qc_metrics", "n_samples", "n_permutations",
+        }
+        assert expected.issubset(set(gvt.columns)), \
+            f"Missing columns: {expected - set(gvt.columns)}"
+
+    def test_has_pc_rows(self, gvt):
+        assert len(gvt) >= 2, "Should decompose at least two PCs"
+
+    def test_r2_in_unit_interval(self, gvt):
+        for col in ["r2_genomic", "r2_technical", "r2_full"]:
+            assert (gvt[col] >= -1e-9).all() and (gvt[col] <= 1 + 1e-9).all(), \
+                f"{col} should be within [0, 1]"
+
+    def test_unique_components_nonnegative(self, gvt):
+        for col in ["unique_genomic", "unique_technical", "unique_genomic_corrected"]:
+            assert (gvt[col] >= -1e-9).all(), f"{col} should be non-negative"
+
+    def test_full_at_least_each_block(self, gvt):
+        # R²_full must be >= R²_genomic and >= R²_technical (nested models).
+        assert (gvt["r2_full"] >= gvt["r2_genomic"] - 1e-6).all()
+        assert (gvt["r2_full"] >= gvt["r2_technical"] - 1e-6).all()
+
+    def test_pvalues_in_valid_range(self, gvt):
+        p = gvt["p_value"].dropna()
+        assert ((p >= 0) & (p <= 1)).all(), "p-values must be within [0, 1]"
+
+    def test_at_least_one_pc_has_significant_genomic_signal(self, gvt):
+        # The whole point: genotype ancestry is a genuine, irreducible component
+        # of at least one NGS-PCA PC after removing all QC-explainable variance.
+        assert (gvt["p_value"] < 0.05).any(), \
+            "Expected at least one PC with significant unique genomic signal"
+
+    def test_top_pcs_are_technical_dominated(self, gvt):
+        # PC1/PC2 are the manuscript's 'batch PCs': technical variance should
+        # exceed the unique genomic component there.
+        top = gvt[gvt["PC"].isin(["PC1", "PC2"])]
+        if len(top):
+            assert (top["unique_technical"] >= top["unique_genomic"]).all(), \
+                "Top PCs should be dominated by technical, not genomic, signal"
+
+    def test_figure_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "genomic_vs_technical.png")
+        assert os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+class TestGenomicVsTechnicalReport:
+    """Tests for the genomic-vs-technical report section."""
+
+    def test_report_has_section(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'id="section-genomic-vs-technical"' in content
+        assert "gvt-partition" in content
+        assert "gvt-survival" in content
+        assert "genomic-vs-technical-summary" in content
+
+    def test_report_toc_link(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'href="#section-genomic-vs-technical"' in content
+
+    def test_report_methods_text(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "13_genomic_vs_technical.py" in content
+        assert "retention" in content.lower()
+        assert "permutation null" in content.lower()
+
+    def test_report_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        gvt = payload.get("genomic_vs_technical")
+        assert gvt is not None, "DATA should contain genomic_vs_technical key"
+        assert gvt.get("n_samples", 0) > 0
+        assert len(gvt.get("records", [])) > 0
+        rec = gvt["records"][0]
+        for key in ["PC", "unique_genomic", "unique_technical", "r2_genomic", "p_value"]:
+            assert key in rec, f"record missing {key}"
