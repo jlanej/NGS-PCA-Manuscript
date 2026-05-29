@@ -597,8 +597,12 @@ def _load_qc_metrics_by_ancestry(output_dir: str):
     if df.empty:
         return None
     metrics = list(dict.fromkeys(df["metric"].tolist()))
-    labels = {str(r["metric"]): str(r["label"]) for _, r in df.iterrows()} \
-        if "label" in df.columns else {m: m for m in metrics}
+    if "label" in df.columns:
+        label_df = df.drop_duplicates(subset="metric")
+        labels = dict(zip(label_df["metric"].astype(str),
+                          label_df["label"].astype(str)))
+    else:
+        labels = {m: m for m in metrics}
     groups = [g for g in df["superpopulation"].unique().tolist() if g != "ALL"]
     groups = sorted(groups) + ["ALL"]
     rows = []

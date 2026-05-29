@@ -309,7 +309,8 @@ def per_metric_variance(
     """
     n_samples = len(sub)
     G = _standardize(sub[array_cols].values.astype(float))
-    batch = _batch_dummies(sub[BATCH_COL]) if BATCH_COL in sub.columns \
+    has_batch = BATCH_COL in sub.columns and sub[BATCH_COL].notna().any()
+    batch = _batch_dummies(sub[BATCH_COL]) if has_batch \
         else np.zeros((n_samples, 0))
     M_B = np.column_stack([np.ones(n_samples), batch])
 
@@ -337,7 +338,10 @@ def per_metric_variance(
         residual = max(0.0, 1.0 - r2_full)
 
         # Redundancy: average R²(ARRAY_PC_k ~ m_std) across the ancestry PCs.
-        # With standardised columns this is the mean squared Pearson r.
+        # With standardised columns this is the mean squared Pearson r.  ss_tot>0
+        # is guaranteed above, so y.std()>0; the 1.0 fallback is a pure guard
+        # against floating-point underflow and yields redundancy≈0 for a metric
+        # with negligible variance (which carries no ancestry information).
         ys = (y - y.mean()) / (y.std() if y.std() > 1e-12 else 1.0)
         corr = (G * ys[:, None]).mean(axis=0)  # corr(PC_k, m) per column
         redundancy = float(np.mean(corr ** 2)) if n_array > 0 else 0.0
