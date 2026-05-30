@@ -8,6 +8,14 @@ sample_qc.tsv (produced by NGS-PCA ≥ PR #34) already contains a correct
 SUPERPOPULATION column (AFR / AMR / EAS / EUR / SAS) and a FAMILY_ROLE column
 (unrel / child / father / mother / …).  No remapping is required.
 
+The per-sample ``mosdepth_coverage_summary.tsv`` is also merged so the full set
+of mosdepth coverage summary statistics is available downstream.  Most of its
+columns (``SD_COV``, ``MAD_COV``, ``IQR_COV``, ``HQ_MEDIAN_COV``, ``HQ_SD_COV``,
+``HQ_MAD_COV``, ``HQ_IQR_COV``) are already present in ``sample_qc.tsv`` with
+identical values; only the genome-wide mean/median depth columns
+(``MEAN_COV``, ``MEDIAN_COV``, ``HQ_MEAN_COV``) are unique to mosdepth and are
+added here so the focused decisive-test metric set is complete.
+
 Outputs
 -------
 {output_dir}/merged_pcs_qc.tsv
@@ -46,6 +54,24 @@ def merge_pcs_qc(data_dir: str, output_dir: str, n_samples: int = 0) -> pd.DataF
 
     merged = pcs.merge(qc, left_on="SAMPLE", right_on="SAMPLE_ID", how="inner")
     merged = merged.drop(columns=["SAMPLE_ID"])
+
+    # Merge the mosdepth coverage summary so the genome-wide mean/median depth
+    # columns (unique to mosdepth) are available alongside the rest.  Columns
+    # that already exist in sample_qc.tsv (identical values) are not duplicated.
+    mosdepth_path = os.path.join(
+        data_dir, "qc_output", "mosdepth_coverage_summary.tsv"
+    )
+    if os.path.isfile(mosdepth_path):
+        mosdepth = pd.read_csv(mosdepth_path, sep="\t")
+        new_cols = [
+            c for c in mosdepth.columns
+            if c == "SAMPLE_ID" or c not in merged.columns
+        ]
+        merged = merged.merge(
+            mosdepth[new_cols], left_on="SAMPLE", right_on="SAMPLE_ID",
+            how="left",
+        )
+        merged = merged.drop(columns=["SAMPLE_ID"])
 
     if n_samples > 0:
         merged = merged.head(n_samples)

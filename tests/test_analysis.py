@@ -80,6 +80,13 @@ class TestMergeAndMapping:
         for col in ("RELEASE_BATCH", "INFERRED_SEX", "POPULATION"):
             assert col in merged.columns, f"Missing column {col}"
 
+    def test_has_mosdepth_coverage_columns(self, merged):
+        """The genome-wide mean/median depth columns unique to the mosdepth
+        coverage summary should be merged in (scripts/00_merge_pcs_qc.py)."""
+        for col in ("MEAN_COV", "MEDIAN_COV", "HQ_MEAN_COV"):
+            assert col in merged.columns, f"Missing mosdepth column {col}"
+            assert merged[col].notna().any(), f"{col} should have non-null values"
+
     def test_superpopulation_from_file(self, merged):
         """SUPERPOPULATION should come directly from sample_qc.tsv (no remapping)."""
         assert "SUPERPOPULATION" in merged.columns
@@ -124,6 +131,10 @@ EXPECTED_FILES = [
     "crossmodality_scatter.png",
     "genomic_vs_technical.tsv",
     "genomic_vs_technical.png",
+    "qc_metrics_by_ancestry.tsv",
+    "batch_by_ancestry.tsv",
+    "per_metric_variance.tsv",
+    "per_metric_variance.png",
 ]
 
 
@@ -1288,10 +1299,17 @@ class TestGenomicVsTechnical:
             "PC", "r2_genomic", "r2_technical", "r2_full",
             "unique_genomic", "unique_technical", "shared", "retention",
             "unique_genomic_corrected", "mean_null_unique_genomic", "p_value",
-            "n_array_pcs", "n_qc_metrics", "n_samples", "n_permutations",
+            "n_array_pcs", "n_qc_metrics", "n_batches", "n_samples", "n_permutations",
         }
         assert expected.issubset(set(gvt.columns)), \
             f"Missing columns: {expected - set(gvt.columns)}"
+
+    def test_technical_block_uses_focused_mosdepth_metrics(self, gvt):
+        # Block T is focused to the 10 mosdepth coverage metrics (plus batch,
+        # tracked separately).  All should survive the constant-column filter.
+        assert (gvt["n_qc_metrics"] == 10).all(), \
+            "Decisive test should use the 10 focused mosdepth coverage metrics"
+        assert (gvt["n_batches"] >= 1).all()
 
     def test_has_pc_rows(self, gvt):
         assert len(gvt) >= 2, "Should decompose at least two PCs"
@@ -1376,3 +1394,181 @@ class TestGenomicVsTechnicalReport:
         rec = gvt["records"][0]
         for key in ["PC", "unique_genomic", "unique_technical", "r2_genomic", "p_value"]:
             assert key in rec, f"record missing {key}"
+
+
+# ---------------------------------------------------------------------------
+# Focused-metric cohort tables (by ancestry / batch) — script 13 companions
+# ---------------------------------------------------------------------------
+FOCUSED_METRICS = [
+    "MEAN_COV", "MEDIAN_COV", "SD_COV", "MAD_COV", "IQR_COV",
+    "HQ_MEAN_COV", "HQ_MEDIAN_COV", "HQ_SD_COV", "HQ_MAD_COV", "HQ_IQR_COV",
+]
+
+
+class TestFocusedMetricTables:
+    """Tests for the focused-metric summary and batch × ancestry tables."""
+
+    def test_qc_metrics_by_ancestry_exists(self):
+        path = os.path.join(OUTPUT_DIR, "qc_metrics_by_ancestry.tsv")
+        assert os.path.isfile(path), f"Missing qc_metrics_by_ancestry.tsv: {path}"
+        df = pd.read_csv(path, sep="\t")
+        assert len(df) > 0
+
+    def test_qc_metrics_by_ancestry_columns(self):
+        path = os.path.join(OUTPUT_DIR, "qc_metrics_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        expected = {"metric", "superpopulation", "n", "mean", "median",
+                    "sd", "mad", "iqr"}
+        assert expected.issubset(set(df.columns)), \
+            f"Missing columns: {expected - set(df.columns)}"
+
+    def test_qc_metrics_by_ancestry_covers_focused_set(self):
+        path = os.path.join(OUTPUT_DIR, "qc_metrics_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        metrics = set(df["metric"].unique())
+        assert set(FOCUSED_METRICS).issubset(metrics), \
+            f"Summary missing focused metrics: {set(FOCUSED_METRICS) - metrics}"
+
+    def test_qc_metrics_by_ancestry_has_all_and_superpops(self):
+        path = os.path.join(OUTPUT_DIR, "qc_metrics_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        groups = set(df["superpopulation"].unique())
+        assert "ALL" in groups, "Summary should include an ALL group"
+        assert {"AFR", "EUR", "EAS"}.issubset(groups), \
+            "Summary should be broken down by superpopulation"
+
+    def test_qc_metrics_by_ancestry_dispersion_nonnegative(self):
+        path = os.path.join(OUTPUT_DIR, "qc_metrics_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        for col in ["sd", "mad", "iqr", "n"]:
+            assert (df[col] >= 0).all(), f"{col} should be non-negative"
+
+    def test_batch_by_ancestry_exists(self):
+        path = os.path.join(OUTPUT_DIR, "batch_by_ancestry.tsv")
+        assert os.path.isfile(path), f"Missing batch_by_ancestry.tsv: {path}"
+        df = pd.read_csv(path, sep="\t")
+        assert len(df) > 0
+
+    def test_batch_by_ancestry_columns(self):
+        path = os.path.join(OUTPUT_DIR, "batch_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        expected = {"superpopulation", "batch", "n", "row_total",
+                    "pct_within_ancestry"}
+        assert expected.issubset(set(df.columns)), \
+            f"Missing columns: {expected - set(df.columns)}"
+
+    def test_batch_by_ancestry_percentages_sum_to_100(self):
+        path = os.path.join(OUTPUT_DIR, "batch_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        for pop, grp in df.groupby("superpopulation"):
+            total = grp["pct_within_ancestry"].sum()
+            assert abs(total - 100.0) < 1e-6, \
+                f"Within-ancestry batch percentages for {pop} should sum to 100"
+
+    def test_batch_by_ancestry_counts_match_totals(self):
+        path = os.path.join(OUTPUT_DIR, "batch_by_ancestry.tsv")
+        df = pd.read_csv(path, sep="\t")
+        for pop, grp in df.groupby("superpopulation"):
+            assert grp["n"].sum() == grp["row_total"].iloc[0], \
+                f"Batch counts for {pop} should sum to the row total"
+
+
+# ---------------------------------------------------------------------------
+# Per-metric variance components — script 13 companion analysis
+# ---------------------------------------------------------------------------
+class TestPerMetricVariance:
+    """Tests for the per-metric variance-components analysis."""
+
+    @pytest.fixture(scope="class")
+    def pm(self):
+        path = os.path.join(OUTPUT_DIR, "per_metric_variance.tsv")
+        assert os.path.isfile(path), f"per_metric_variance.tsv not found: {path}"
+        return pd.read_csv(path, sep="\t")
+
+    def test_has_expected_columns(self, pm):
+        expected = {
+            "metric", "label", "ancestry_var_explained_by_metric",
+            "r2_ancestry", "r2_batch", "r2_full",
+            "unique_ancestry", "unique_batch", "shared", "residual",
+            "p_value", "n_array_pcs", "n_samples", "n_permutations",
+        }
+        assert expected.issubset(set(pm.columns)), \
+            f"Missing columns: {expected - set(pm.columns)}"
+
+    def test_one_row_per_focused_metric(self, pm):
+        metrics = set(pm["metric"].unique())
+        assert metrics.issubset(set(FOCUSED_METRICS)), \
+            f"Unexpected metrics: {metrics - set(FOCUSED_METRICS)}"
+        assert len(pm) >= 5, "Should decompose at least five focused metrics"
+
+    def test_components_sum_to_one(self, pm):
+        total = (pm["unique_ancestry"] + pm["unique_batch"]
+                 + pm["shared"] + pm["residual"])
+        assert np.allclose(total, 1.0, atol=0.02), \
+            f"Variance components should sum to ~1 (range {total.min():.4f}–{total.max():.4f})"
+
+    def test_redundancy_in_unit_interval(self, pm):
+        red = pm["ancestry_var_explained_by_metric"]
+        assert (red >= -1e-9).all() and (red <= 1 + 1e-9).all(), \
+            "Redundancy (ancestry explained by metric) should be within [0, 1]"
+
+    def test_full_at_least_each_block(self, pm):
+        assert (pm["r2_full"] >= pm["r2_ancestry"] - 1e-6).all()
+        assert (pm["r2_full"] >= pm["r2_batch"] - 1e-6).all()
+
+    def test_pvalues_in_valid_range(self, pm):
+        p = pm["p_value"].dropna()
+        assert ((p >= 0) & (p <= 1)).all(), "p-values must be within [0, 1]"
+
+    def test_sorted_by_ancestry_explained(self, pm):
+        red = pm["ancestry_var_explained_by_metric"].values
+        assert (np.diff(red) <= 1e-9).all(), \
+            "Rows should be sorted by descending ancestry-explained redundancy"
+
+    def test_figure_exists_and_nonempty(self):
+        path = os.path.join(OUTPUT_DIR, "per_metric_variance.png")
+        assert os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+class TestPerMetricVarianceReport:
+    """Tests for the per-metric / cohort-table additions to the report."""
+
+    def test_report_has_per_metric_elements(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        for div in ["per-metric-redundancy", "per-metric-partition",
+                    "per-metric-summary", "gvt-batch-table", "gvt-metric-table"]:
+            assert div in content, f"Report missing element: {div}"
+
+    def test_report_mentions_mosdepth_and_redundancy(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "mosdepth_coverage_summary.tsv" in content, \
+            "Report should reference the focused mosdepth metric source"
+        assert "redundancy" in content.lower(), \
+            "Report should describe the redundancy index"
+        assert "1,382" in content or "1382" in content, \
+            "Report should document/verify the 1382 overlap"
+
+    def test_report_per_metric_data_in_payload(self):
+        path = os.path.join(REPORT_DIR, "index.html")
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        match = re.search(
+            r"const DATA = (\{.*?\});\s*\n\s*/\*.*?\*/\s*\n\s*const LAYOUT_BASE",
+            content, re.DOTALL,
+        )
+        assert match, "Report should embed DATA JSON payload"
+        payload = json.loads(match.group(1))
+        for key in ["qc_metrics_by_ancestry", "batch_by_ancestry",
+                    "per_metric_variance"]:
+            assert payload.get(key) is not None, \
+                f"DATA should contain {key}"
+        pm = payload["per_metric_variance"]
+        assert len(pm.get("records", [])) > 0
+        rec = pm["records"][0]
+        for key in ["metric", "ancestry_var_explained_by_metric",
+                    "unique_ancestry", "unique_batch", "p_value"]:
+            assert key in rec, f"per-metric record missing {key}"

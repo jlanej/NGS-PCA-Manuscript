@@ -18,7 +18,8 @@ sequencing data.
 │   │   ├── svd.samples.txt        #   Sample IDs
 │   │   └── svd.bins.txt           #   Genomic bins
 │   └── qc_output/
-│       └── sample_qc.tsv          #   Sample metadata & QC metrics
+│       ├── sample_qc.tsv          #   Sample metadata & QC metrics
+│       └── mosdepth_coverage_summary.tsv # Per-sample mosdepth depth summaries
 ├── scripts/                        # Modular analysis scripts
 │   ├── 00_merge_pcs_qc.py         #   Merge PCs + QC, map superpopulations
 │   ├── 01_scree_plot.py           #   Scree & cumulative variance
@@ -115,6 +116,10 @@ apptainer exec \
 | `batch_vs_ancestry_summary.tsv` | Mean and max η² summary |
 | `genomic_vs_technical.tsv` | Per-PC commonality decomposition: real genomic ancestry (genotype PCs) vs. technical QC variance, with unique-genomic permutation p-values |
 | `genomic_vs_technical.png` | Decisive figure: variance partition per PC and genotype-ancestry signal surviving QC adjustment |
+| `qc_metrics_by_ancestry.tsv` | Per-superpopulation distribution (N, mean, median, SD, MAD, IQR) of each focused mosdepth coverage metric used in the decisive test |
+| `batch_by_ancestry.tsv` | Processing-batch (`RELEASE_BATCH`) membership counts and percentages per superpopulation |
+| `per_metric_variance.tsv` | Per-metric variance components: genotype-ancestry reconstructed by each single coverage metric (Stewart–Love redundancy) and the metric's own ancestry/batch decomposition with permutation p-values |
+| `per_metric_variance.png` | Per-metric figure: genomic ancestry explained by each coverage metric and per-metric ancestry-vs-batch variance decomposition |
 
 ## CI / CD
 
